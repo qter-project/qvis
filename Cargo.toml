@@ -1,0 +1,7 @@
+[package]
+name = "qqveqq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+puzzle_theory = { git = "https://github.com/qter-project/puzzle-theory" }
