@@ -401,6 +401,7 @@ dependencies = [
 name = "qqveqq"
 version = "0.1.0"
 dependencies = [
+ "itertools",
  "puzzle_theory",
 ]
 
