@@ -21,8 +21,6 @@ struct Element {
 
 /// Return a maximum cost matching where the number at index `i` is the index that `i` matches with. The `costs[i][j]` represents the cost of matching `i` with `j`. If the cost is `None`, then we consider matching those two elements to be disallowed. In this case, the function will return `None`.
 ///
-/// TODO: Currently a minimum matching; make this a maximum matching
-///
 /// <https://timroughgarden.org/w16/l/l5.pdf>
 pub fn maximum_matching(costs: &[&[Option<f64>]]) -> Option<Vec<usize>> {
     if costs.is_empty() {
@@ -35,8 +33,8 @@ pub fn maximum_matching(costs: &[&[Option<f64>]]) -> Option<Vec<usize>> {
     // Each value is a tuple of `(left potential, right potential, left matches to, right matches to, bfs depth)`
     let mut data: Box<[_]> = Box::from(vec![Element::default(); costs.len()]);
 
-    // We need the reduced cost to be >=0 and we can make that happen in the case of negative costs by setting all of the potentials on the left to the min cost.
-    let min_cost = costs.iter().flat_map(|v| v.iter()).filter_map(|v| *v).min_by(|a, b| a.total_cmp(b)).unwrap();
+    // We need the reduced cost to be <=0 and we can make that happen in the case of negative costs by setting all of the potentials on the left to the min cost.
+    let min_cost = costs.iter().flat_map(|v| v.iter()).filter_map(|v| *v).max_by(|a, b| a.total_cmp(b)).unwrap();
 
     for elt in &mut data {
         elt.left.potential = min_cost;
@@ -87,7 +85,7 @@ fn find_augmenting_path(
                 // Search any nodes on the right that are unvisited and where the reduced cost is zero
                 if let Some(cost) = costs[left_idx][right_idx]
                     && !data[right_idx].right.visited
-                    && (cost - data[left_idx].left.potential - data[right_idx].right.potential)
+                    && (data[left_idx].left.potential + data[right_idx].right.potential - cost)
                         .abs()
                         < E
                 {
@@ -145,7 +143,7 @@ fn relax_potentials(data: &mut [Element], costs: &[&[Option<f64>]]) -> bool {
         .filter(|((i, j), _)| {
             data[*i].left.visited && !data[*j].right.visited
         })
-        .map(|((i, j), c)| c - data[i].left.potential - data[j].right.potential)
+        .map(|((i, j), c)| data[i].left.potential + data[j].right.potential - c)
         .min_by(|a, b| a.total_cmp(b))
     else {
         return false;
@@ -159,11 +157,11 @@ fn relax_potentials(data: &mut [Element], costs: &[&[Option<f64>]]) -> bool {
 
     for elt in data {
         if elt.left.visited {
-            elt.left.potential += δ;
+            elt.left.potential -= δ;
         }
 
         if elt.right.visited {
-            elt.right.potential -= δ;
+            elt.right.potential += δ;
         }
     }
 
@@ -176,44 +174,28 @@ mod tests {
 
     #[test]
     fn example() {
-        // 1. Good path from A fails
-        // 2. Relax A to 4
-        // 3. Good path A -> Y found
-        // 4. Good path from B fails
-        // 5. Relax B to 2
-        // 6. Good path from B fails (S = {B, A}, N(S) = {Y})
-        // 7. Relax min{1, 3, 3, 4} = 1; A = 5, B = 3, Y = -1
-        // 8. Good path B -> Z found
-        // 9. Good path from C fails
-        // 10. Relax C to 5
-        // 11. Good path from C fails (S = {C, A}, N(S) = {Y})
-        // 12. Relax min{3, 4, 2, 3} = 2; C = 7, A = 7, Y = -3
-        // 13. Good path from C fails (S = {C, A, B}, N(S) = {Y, Z})
-        // 14. Relax min{2, 2, 1} = 1; A = 8, B = 4, C = 8, Y = -4, Z = -1
-        // 15. Good path C->Y->A->X
-        // 16. Matching found: A->X, B->Z, C->Y
         assert_eq!(maximum_matching(&[
-            &[Some(8.), Some(4.), Some(7.)],
-            &[Some(6.), Some(2.), Some(3.)],
-            &[Some(9.), Some(4.), Some(8.)],
+            &[Some(-8.), Some(-4.), Some(-7.)],
+            &[Some(-6.), Some(-2.), Some(-3.)],
+            &[Some(-9.), Some(-4.), Some(-8.)],
         ]), Some(vec![0, 2, 1]));
 
         assert_eq!(maximum_matching(&[
-            &[None, Some(4.), Some(7.)],
-            &[Some(6.), Some(2.), Some(3.)],
-            &[Some(9.), Some(4.), Some(8.)],
+            &[None, Some(-4.), Some(-7.)],
+            &[Some(-6.), Some(-2.), Some(-3.)],
+            &[Some(-9.), Some(-4.), Some(-8.)],
         ]), Some(vec![1, 2, 0]));
 
         assert_eq!(maximum_matching(&[
-            &[None, Some(4.), Some(7.)],
-            &[None, Some(2.), Some(3.)],
-            &[None, Some(4.), Some(8.)],
+            &[None, Some(-4.), Some(-7.)],
+            &[None, Some(-2.), Some(-3.)],
+            &[None, Some(-4.), Some(-8.)],
         ]), None);
 
         assert_eq!(maximum_matching(&[
-            &[Some(-100.), Some(-110.), Some(-90.)],
-            &[Some(-95.), Some(-130.), Some(-75.)],
-            &[Some(-95.), Some(-140.), Some(-65.)],
+            &[Some(100.), Some(110.), Some(90.)],
+            &[Some(95.), Some(130.), Some(75.)],
+            &[Some(95.), Some(140.), Some(65.)],
         ]), Some(vec![2, 0, 1]));
     }
 }
