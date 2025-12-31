@@ -170,7 +170,7 @@ fn relax_potentials(data: &mut [Element], costs: &[&[Option<f64>]]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::hungarian_algorithm::maximum_matching;
+    use super::maximum_matching;
 
     #[test]
     fn example() {
