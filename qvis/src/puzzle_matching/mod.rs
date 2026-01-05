@@ -17,7 +17,7 @@ use crate::puzzle_matching::hungarian_algorithm::maximum_matching;
 mod hungarian_algorithm;
 
 pub struct Matcher {
-    orbits: Vec<OrbitMatcher>,
+    orbits: Box<[OrbitMatcher]>,
     stab_chain: StabilizerChain,
 }
 
@@ -35,6 +35,149 @@ impl Matcher {
             orbits,
             stab_chain: StabilizerChain::new(&puzzle.permutation_group()),
         }
+    }
+
+    pub fn most_likely(
+        &self,
+        log_likelihoods: &[HashMap<ArcIntern<str>, f64>],
+    ) -> (Permutation, f64) {
+        let iters = self
+            .orbits
+            .iter()
+            .map(|v| SavedIter {
+                iter: v.most_likely_matchings(log_likelihoods),
+                saved: Vec::new(),
+            })
+            .collect();
+
+        let mut states = PuzzleIter::new(iters);
+
+        states
+            .find(|(v, _)| self.stab_chain.is_member(v.clone()))
+            .unwrap()
+    }
+}
+
+struct SavedIter<I: Iterator<Item = (Permutation, f64)>> {
+    saved: Vec<(Permutation, f64)>,
+    iter: I,
+}
+
+impl<I: Iterator<Item = (Permutation, f64)>> SavedIter<I> {
+    fn get(&mut self, i: usize) -> (&Permutation, f64) {
+        while self.saved.len() <= i {
+            self.saved.push(self.iter.next().unwrap());
+        }
+
+        let (perm, ll) = self.saved.get(i).unwrap();
+        (perm, *ll)
+    }
+}
+
+struct PuzzleIter<I: Iterator<Item = (Permutation, f64)>> {
+    heap: BinaryHeap<PuzzleHeapElt>,
+    iters: Box<[SavedIter<I>]>,
+    cache: Option<PuzzleHeapElt>,
+}
+
+impl<I: Iterator<Item = (Permutation, f64)>> PuzzleIter<I> {
+    fn new(mut iters: Box<[SavedIter<I>]>) -> PuzzleIter<I> {
+        let mut heap = BinaryHeap::new();
+
+        heap.push(PuzzleHeapElt::new(vec![0; iters.len()].into(), &mut iters));
+
+        PuzzleIter {
+            heap,
+            iters,
+            cache: None,
+        }
+    }
+}
+
+impl<I: Iterator<Item = (Permutation, f64)>> Iterator for PuzzleIter<I> {
+    type Item = (Permutation, f64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(prev) = self.cache.take() {
+            let splitted = prev.split(&mut self.iters);
+
+            self.heap.extend(splitted);
+        }
+
+        let item = self.heap.pop()?;
+
+        let mut ll = 0.;
+        let cycles = item
+            .idxs
+            .iter()
+            .zip(&mut self.iters)
+            .flat_map(|(v, iter)| {
+                let (perm, orbit_ll) = iter.get(*v);
+                ll += orbit_ll;
+                perm.cycles().iter()
+            })
+            .cloned()
+            .collect();
+
+        self.cache = Some(item);
+
+        Some((Permutation::from_cycles(cycles), ll))
+    }
+}
+
+struct PuzzleHeapElt {
+    idxs: Box<[usize]>,
+    log_likelihood: f64,
+}
+
+impl PuzzleHeapElt {
+    fn new<I: Iterator<Item = (Permutation, f64)>>(
+        idxs: Box<[usize]>,
+        iters: &mut [SavedIter<I>],
+    ) -> PuzzleHeapElt {
+        let ll = idxs
+            .iter()
+            .zip(iters.iter_mut())
+            .map(|(idx, iter)| iter.get(*idx).1)
+            .sum::<f64>();
+
+        PuzzleHeapElt {
+            idxs,
+            log_likelihood: ll,
+        }
+    }
+
+    fn split<I: Iterator<Item = (Permutation, f64)>>(
+        &self,
+        iters: &mut [SavedIter<I>],
+    ) -> Vec<PuzzleHeapElt> {
+        (0..self.idxs.len())
+            .map(|i| {
+                let mut idxs = self.idxs.clone();
+                idxs[i] += 1;
+                PuzzleHeapElt::new(idxs, iters)
+            })
+            .collect_vec()
+    }
+}
+
+impl PartialEq for PuzzleHeapElt {
+    fn eq(&self, other: &Self) -> bool {
+        self.idxs == other.idxs
+    }
+}
+
+impl Eq for PuzzleHeapElt {}
+
+impl PartialOrd for PuzzleHeapElt {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PuzzleHeapElt {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.log_likelihood.total_cmp(&other.log_likelihood)
     }
 }
 
@@ -71,7 +214,7 @@ impl OrbitMatcher {
                     let pieces = sticker_color_piece.entry((ori_num, color)).or_default();
                     pieces.push((i, ori));
 
-                    current_sticker = piece.twist().mapping().get(current_sticker);
+                    current_sticker = piece.twist().goes_to().get(current_sticker);
                 }
             }
         }
@@ -83,7 +226,7 @@ impl OrbitMatcher {
                 .generators()
                 .map(|(name, perm)| {
                     let new_perm = Permutation::from_mapping(
-                        perm.mapping()
+                        perm.goes_to()
                             .minimal()
                             .iter()
                             .enumerate()
@@ -107,7 +250,7 @@ impl OrbitMatcher {
     fn most_likely_matchings(
         &self,
         log_likelihoods: &[HashMap<ArcIntern<str>, f64>],
-    ) -> impl Iterator<Item = Permutation> {
+    ) -> impl Iterator<Item = (Permutation, f64)> {
         // Data for matching piece i to piece j where piece j gives the cost for each possible orientation
         let mut cost_matrix = Array3::zeros([
             self.orbit.pieces().len(),
@@ -148,7 +291,7 @@ impl OrbitMatcher {
             cache: None,
             facelet_count: self.puzzle.permutation_group().facelet_count(),
         }
-        .filter(|perm| self.stab_chain.is_member(perm.clone()))
+        .filter(|(perm, _)| self.stab_chain.is_member(perm.clone()))
     }
 }
 
@@ -162,7 +305,7 @@ struct MatchIter<'a> {
 }
 
 impl<'a> Iterator for MatchIter<'a> {
-    type Item = Permutation;
+    type Item = (Permutation, f64);
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(item) = self.cache.take() {
@@ -175,12 +318,8 @@ impl<'a> Iterator for MatchIter<'a> {
             self.heap.pop();
         }
 
-        let data = self
-            .orbit_matcher
-            .puzzle
-            .pieces_data();
-        let ori_nums = data
-            .orientation_numbers();
+        let data = self.orbit_matcher.puzzle.pieces_data();
+        let ori_nums = data.orientation_numbers();
 
         let mut mapping_comes_from = (0..self.facelet_count).collect_vec();
         for (spot, (is, ori)) in item.matching.iter().enumerate() {
@@ -194,9 +333,11 @@ impl<'a> Iterator for MatchIter<'a> {
             }
         }
 
+        let ll = item.log_likelihood;
+
         self.cache = Some(item);
 
-        Some(Permutation::from_mapping(mapping_comes_from))
+        Some((Permutation::from_state(mapping_comes_from), ll))
     }
 }
 
@@ -308,5 +449,74 @@ impl Ord for HeapElt {
         }
 
         self.log_likelihood.total_cmp(&other.log_likelihood)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::array;
+
+    use crate::puzzle_matching::HeapElt;
+
+    #[test]
+    fn heap_elt() {
+        let cost_matrix_3d = array![
+            [[-8., -10.], [-4., -10.], [-7., -10.],],
+            [[-6., -10.], [-2., -10.], [-3., -10.],],
+            [[-9., -10.], [-4., -10.], [-8., -10.],]
+        ];
+
+        let elt = HeapElt::new(&cost_matrix_3d);
+
+        assert_eq!(elt.log_likelihood, -8. + -4. + -3.);
+
+        assert_eq!(
+            elt.cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [Some(-9.), Some(-4.), Some(-8.)],
+            ]
+        );
+
+        assert_eq!(
+            elt.oris_chosen,
+            array![
+                [Some(0), Some(0), Some(0),],
+                [Some(0), Some(0), Some(0),],
+                [Some(0), Some(0), Some(0),],
+            ]
+        );
+
+        assert_eq!(elt.matching, vec![(0, 0), (2, 0), (1, 0)]);
+
+        let mut splits = elt.split(&cost_matrix_3d);
+
+        assert_eq!(
+            splits.next().unwrap().cost_matrix_2d,
+            array![
+                [Some(-10.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [Some(-9.), Some(-4.), Some(-8.)],
+            ]
+        );
+
+        assert_eq!(
+            splits.next().unwrap().cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-10.)],
+                [Some(-9.), Some(-4.), Some(-8.)],
+            ]
+        );
+
+        assert_eq!(
+            splits.next().unwrap().cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [Some(-9.), Some(-10.), Some(-8.)],
+            ]
+        );
     }
 }

@@ -2,7 +2,7 @@ use std::sync::{Arc, mpsc};
 
 use puzzle_theory::{permutations::Permutation, puzzle_geometry::PuzzleGeometry};
 
-mod puzzle_matching;
+pub mod puzzle_matching;
 
 /// Processes images for computer vision
 pub struct CVProcessor {
