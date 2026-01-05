@@ -1,13 +1,18 @@
 use std::{
-    collections::HashMap,
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap},
     sync::Arc,
 };
 
 use internment::ArcIntern;
+use itertools::Itertools;
+use ndarray::{Array2, Array3, ArrayRef2, ArrayRef3, Axis, s};
 use puzzle_theory::{
     permutations::{Permutation, PermutationGroup, schreier_sims::StabilizerChain},
-    puzzle_geometry::{OrbitData, PuzzleGeometry},
+    puzzle_geometry::{OrbitData, OriNum, PuzzleGeometry},
 };
+
+use crate::puzzle_matching::hungarian_algorithm::maximum_matching;
 
 mod hungarian_algorithm;
 
@@ -35,8 +40,10 @@ impl Matcher {
 
 struct OrbitMatcher {
     stab_chain: StabilizerChain,
-    // Maps the observation (sticker orientation idx, color) to all (piece, orientation) that would be consistent with it
-    sticker_color_piece: HashMap<(usize, ArcIntern<str>), Vec<(usize, usize)>>,
+    // Maps the observation (sticker orientation num, color) to all (piece, orientation) that would be consistent with it
+    sticker_color_piece: HashMap<(OriNum, ArcIntern<str>), Vec<(usize, usize)>>,
+    orbit: OrbitData,
+    puzzle: Arc<PuzzleGeometry>,
 }
 
 impl OrbitMatcher {
@@ -48,7 +55,7 @@ impl OrbitMatcher {
         let ori_count = orbit.orientation_count();
 
         let mut sticker_color_piece =
-            HashMap::<(usize, ArcIntern<str>), Vec<(usize, usize)>>::new();
+            HashMap::<(OriNum, ArcIntern<str>), Vec<(usize, usize)>>::new();
 
         let mut sticker_in_orbit = vec![false; group.facelet_count()];
 
@@ -59,7 +66,7 @@ impl OrbitMatcher {
                 let mut current_sticker = *sticker;
                 for ori in 0..ori_count {
                     let ori_num = ori_nums[current_sticker];
-                    let color = ArcIntern::clone(&group.facelet_colors()[ori_num]);
+                    let color = ArcIntern::clone(&group.facelet_colors()[*sticker]);
 
                     let pieces = sticker_color_piece.entry((ori_num, color)).or_default();
                     pieces.push((i, ori));
@@ -92,6 +99,214 @@ impl OrbitMatcher {
         OrbitMatcher {
             stab_chain: StabilizerChain::new(&Arc::new(subgroup)),
             sticker_color_piece,
+            orbit: orbit.to_owned(),
+            puzzle,
         }
+    }
+
+    fn most_likely_matchings(
+        &self,
+        log_likelihoods: &[HashMap<ArcIntern<str>, f64>],
+    ) -> impl Iterator<Item = Permutation> {
+        // Data for matching piece i to piece j where piece j gives the cost for each possible orientation
+        let mut cost_matrix = Array3::zeros([
+            self.orbit.pieces().len(),
+            self.orbit.pieces().len(),
+            self.orbit.orientation_count(),
+        ]);
+
+        for (piece, mut cost_row) in self
+            .orbit
+            .pieces()
+            .iter()
+            .zip(cost_matrix.axis_iter_mut(Axis(0)))
+        {
+            let pieces_data = self.puzzle.pieces_data();
+            let ori_nums = pieces_data.orientation_numbers();
+
+            for sticker in piece.stickers() {
+                let ori_num = ori_nums[*sticker];
+
+                for (color, log_likelihood) in log_likelihoods[*sticker]
+                    .iter()
+                    .map(|(a, b)| (ArcIntern::clone(a), *b))
+                {
+                    for (piece, ori) in self.sticker_color_piece.get(&(ori_num, color)).unwrap() {
+                        cost_row[[*piece, *ori]] += log_likelihood;
+                    }
+                }
+            }
+        }
+
+        let mut heap = BinaryHeap::new();
+        heap.push(HeapElt::new(&cost_matrix));
+
+        MatchIter {
+            orbit_matcher: self,
+            cost_matrix,
+            heap,
+            cache: None,
+            facelet_count: self.puzzle.permutation_group().facelet_count(),
+        }
+        .filter(|perm| self.stab_chain.is_member(perm.clone()))
+    }
+}
+
+struct MatchIter<'a> {
+    orbit_matcher: &'a OrbitMatcher,
+    cost_matrix: Array3<f64>,
+    heap: BinaryHeap<HeapElt>,
+    facelet_count: usize,
+    // Save the HeapElt we just returned instead of splitting it and putting it in the heap immediately
+    cache: Option<HeapElt>,
+}
+
+impl<'a> Iterator for MatchIter<'a> {
+    type Item = Permutation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.cache.take() {
+            self.heap.extend(item.split(&self.cost_matrix));
+        }
+
+        let item = self.heap.pop()?;
+
+        while self.heap.peek().map(|v| &v.allowed) == Some(&item.allowed) {
+            self.heap.pop();
+        }
+
+        let data = self
+            .orbit_matcher
+            .puzzle
+            .pieces_data();
+        let ori_nums = data
+            .orientation_numbers();
+
+        let mut mapping_comes_from = (0..self.facelet_count).collect_vec();
+        for (spot, (is, ori)) in item.matching.iter().enumerate() {
+            for sticker_spot in self.orbit_matcher.orbit.pieces()[spot].stickers() {
+                let target_ori = ori_nums[*sticker_spot] + *ori;
+                mapping_comes_from[*sticker_spot] = *self.orbit_matcher.orbit.pieces()[*is]
+                    .stickers()
+                    .iter()
+                    .find(|v| ori_nums[**v] == target_ori)
+                    .unwrap();
+            }
+        }
+
+        self.cache = Some(item);
+
+        Some(Permutation::from_mapping(mapping_comes_from))
+    }
+}
+
+struct HeapElt {
+    allowed: Array3<bool>,
+    cost_matrix_2d: Array2<Option<f64>>,
+    oris_chosen: Array2<Option<usize>>,
+    log_likelihood: f64,
+    matching: Vec<(usize, usize)>,
+}
+
+impl HeapElt {
+    fn new(cost_matrix_3d: &ArrayRef3<f64>) -> HeapElt {
+        let maxima = cost_matrix_3d.map_axis(Axis(2), |v| {
+            v.into_iter()
+                .copied()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                .unwrap()
+        });
+
+        let cost_matrix_2d = maxima.map(|v| Some(v.1));
+        let oris_chosen = maxima.map(|v| Some(v.0));
+
+        let (matching, log_likelihood) = Self::mk_matching(&cost_matrix_2d, &oris_chosen).unwrap();
+
+        HeapElt {
+            allowed: Array3::from_elem(cost_matrix_3d.raw_dim(), true),
+            cost_matrix_2d,
+            oris_chosen,
+            log_likelihood,
+            matching,
+        }
+    }
+
+    fn mk_matching(
+        cost_matrix_2d: &ArrayRef2<Option<f64>>,
+        oris_chosen: &ArrayRef2<Option<usize>>,
+    ) -> Option<(Vec<(usize, usize)>, f64)> {
+        let matching = maximum_matching(cost_matrix_2d)?
+            .into_iter()
+            .enumerate()
+            .map(|(i, j)| (j, oris_chosen[[i, j]].unwrap()))
+            .collect_vec();
+
+        let log_likelihood = matching
+            .iter()
+            .enumerate()
+            .map(|(i, (j, _))| cost_matrix_2d[[i, *j]].unwrap())
+            .sum();
+
+        Some((matching, log_likelihood))
+    }
+
+    fn split(&self, cost_matrix_3d: &ArrayRef3<f64>) -> impl Iterator<Item = HeapElt> {
+        self.matching
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(i, (j, ori))| {
+                let mut allowed = self.allowed.clone();
+                let mut cost_matrix_2d = self.cost_matrix_2d.clone();
+                let mut oris_chosen = self.oris_chosen.clone();
+
+                allowed[[i, j, ori]] = false;
+                let maybe_ori = cost_matrix_3d
+                    .slice(s![i, j, ..])
+                    .iter()
+                    .zip(allowed.slice(s![i, j, ..]))
+                    .enumerate()
+                    .filter(|(_, (_, v))| **v)
+                    .max_by(|(_, (a, _)), (_, (b, _))| a.total_cmp(b))
+                    .map(|(a, (b, _))| (a, *b));
+
+                cost_matrix_2d[[i, j]] = maybe_ori.map(|(_, v)| v);
+                oris_chosen[[i, j]] = maybe_ori.map(|(v, _)| v);
+
+                let (matching, log_likelihood) = Self::mk_matching(&cost_matrix_2d, &oris_chosen)?;
+
+                Some(HeapElt {
+                    allowed,
+                    cost_matrix_2d,
+                    oris_chosen,
+                    log_likelihood,
+                    matching,
+                })
+            })
+    }
+}
+
+impl PartialEq for HeapElt {
+    fn eq(&self, other: &Self) -> bool {
+        self.allowed == other.allowed
+    }
+}
+
+impl Eq for HeapElt {}
+
+impl PartialOrd for HeapElt {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapElt {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.allowed == other.allowed {
+            return Ordering::Equal;
+        }
+
+        self.log_likelihood.total_cmp(&other.log_likelihood)
     }
 }

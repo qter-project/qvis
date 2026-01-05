@@ -1,6 +1,6 @@
 use std::mem;
 
-use itertools::Itertools;
+use ndarray::ArrayRef2;
 
 const E: f64 = 1e-9;
 
@@ -22,19 +22,18 @@ struct Element {
 /// Return a maximum cost matching where the number at index `i` is the index that `i` matches with. The `costs[i][j]` represents the cost of matching `i` with `j`. If the cost is `None`, then we consider matching those two elements to be disallowed. In this case, the function will return `None`.
 ///
 /// <https://timroughgarden.org/w16/l/l5.pdf>
-pub fn maximum_matching(costs: &[&[Option<f64>]]) -> Option<Vec<usize>> {
+pub fn maximum_matching(costs: &ArrayRef2<Option<f64>>) -> Option<Vec<usize>> {
+    assert!(costs.is_square());
+
     if costs.is_empty() {
         return Some(Vec::new());
     }
 
-    assert!(costs.iter().map(|v| v.len()).all_equal());
-    assert_eq!(costs.len(), costs[0].len());
-
     // Each value is a tuple of `(left potential, right potential, left matches to, right matches to, bfs depth)`
-    let mut data: Box<[_]> = Box::from(vec![Element::default(); costs.len()]);
+    let mut data: Box<[_]> = Box::from(vec![Element::default(); costs.shape()[0]]);
 
     // We need the reduced cost to be <=0 and we can make that happen in the case of negative costs by setting all of the potentials on the left to the min cost.
-    let min_cost = costs.iter().flat_map(|v| v.iter()).filter_map(|v| *v).max_by(|a, b| a.total_cmp(b)).unwrap();
+    let min_cost = costs.iter().filter_map(|v| *v).max_by(|a, b| a.total_cmp(b)).unwrap();
 
     for elt in &mut data {
         elt.left.potential = min_cost;
@@ -64,7 +63,7 @@ pub fn maximum_matching(costs: &[&[Option<f64>]]) -> Option<Vec<usize>> {
 fn find_augmenting_path(
     start_from: usize,
     data: &mut [Element],
-    costs: &[&[Option<f64>]],
+    costs: &ArrayRef2<Option<f64>>,
 ) -> Option<usize> {
     // Reset the BFS tracker
     for elt in &mut *data {
@@ -81,9 +80,9 @@ fn find_augmenting_path(
 
     while !current_level.is_empty() {
         for left_idx in current_level.drain(..) {
-            for right_idx in 0..costs.len() {
+            for right_idx in 0..costs.shape()[0] {
                 // Search any nodes on the right that are unvisited and where the reduced cost is zero
-                if let Some(cost) = costs[left_idx][right_idx]
+                if let Some(cost) = costs[[left_idx, right_idx]]
                     && !data[right_idx].right.visited
                     && (data[left_idx].left.potential + data[right_idx].right.potential - cost)
                         .abs()
@@ -134,11 +133,9 @@ fn toggle_augmenting_path(mut endpoint: usize, data: &mut [Element]) {
 /// Relax the potentials along the path to make at least one more edge tight
 ///
 /// Returns whether anything was able to be relaxed
-fn relax_potentials(data: &mut [Element], costs: &[&[Option<f64>]]) -> bool {
+fn relax_potentials(data: &mut [Element], costs: &ArrayRef2<Option<f64>>) -> bool {
     let Some(δ) = costs
-        .iter()
-        .enumerate()
-        .flat_map(|(i, v)| v.iter().enumerate().map(move |(j, v)| ((i, j), v)))
+        .indexed_iter()
         .filter_map(|(idxs, v)| v.map(|v| (idxs, v)))
         .filter(|((i, j), _)| {
             data[*i].left.visited && !data[*j].right.visited
@@ -170,32 +167,34 @@ fn relax_potentials(data: &mut [Element], costs: &[&[Option<f64>]]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use ndarray::array;
+
     use super::maximum_matching;
 
     #[test]
     fn example() {
-        assert_eq!(maximum_matching(&[
-            &[Some(-8.), Some(-4.), Some(-7.)],
-            &[Some(-6.), Some(-2.), Some(-3.)],
-            &[Some(-9.), Some(-4.), Some(-8.)],
+        assert_eq!(maximum_matching(&array![
+            [Some(-8.), Some(-4.), Some(-7.)],
+            [Some(-6.), Some(-2.), Some(-3.)],
+            [Some(-9.), Some(-4.), Some(-8.)],
         ]), Some(vec![0, 2, 1]));
 
-        assert_eq!(maximum_matching(&[
-            &[None, Some(-4.), Some(-7.)],
-            &[Some(-6.), Some(-2.), Some(-3.)],
-            &[Some(-9.), Some(-4.), Some(-8.)],
+        assert_eq!(maximum_matching(&array![
+            [None, Some(-4.), Some(-7.)],
+            [Some(-6.), Some(-2.), Some(-3.)],
+            [Some(-9.), Some(-4.), Some(-8.)],
         ]), Some(vec![1, 2, 0]));
 
-        assert_eq!(maximum_matching(&[
-            &[None, Some(-4.), Some(-7.)],
-            &[None, Some(-2.), Some(-3.)],
-            &[None, Some(-4.), Some(-8.)],
+        assert_eq!(maximum_matching(&array![
+            [None, Some(-4.), Some(-7.)],
+            [None, Some(-2.), Some(-3.)],
+            [None, Some(-4.), Some(-8.)],
         ]), None);
 
-        assert_eq!(maximum_matching(&[
-            &[Some(100.), Some(110.), Some(90.)],
-            &[Some(95.), Some(130.), Some(75.)],
-            &[Some(95.), Some(140.), Some(65.)],
+        assert_eq!(maximum_matching(&array![
+            [Some(100.), Some(110.), Some(90.)],
+            [Some(95.), Some(130.), Some(75.)],
+            [Some(95.), Some(140.), Some(65.)],
         ]), Some(vec![2, 0, 1]));
     }
 }
