@@ -6,10 +6,9 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
     routing::{get, post},
 };
-use leptos::logging::log;
-use leptos::prelude::*;
-use leptos_axum::{AxumRouteListing, LeptosRoutes, file_and_error_handler_with_context};
+use leptos::{logging::log, prelude::*};
 use leptos_axum::{
+    AxumRouteListing, LeptosRoutes, file_and_error_handler_with_context,
     generate_route_list_with_exclusions_and_ssg_and_context, handle_server_fns_with_context,
 };
 use leptos_ws::WsSignals;
@@ -18,26 +17,12 @@ use tokio::net::TcpListener;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
-    pub server_signals: WsSignals,
-    pub routes: Option<Vec<AxumRouteListing>>,
-    pub options: LeptosOptions,
+    server_signals: WsSignals,
+    routes: Option<Vec<AxumRouteListing>>,
+    options: LeptosOptions,
 }
 
-async fn leptos_routes_handler(state: State<AppState>, req: Request<AxumBody>) -> AxumResponse {
-    let state1 = state.0.clone();
-    let options1 = state.clone().0.options.clone();
-    let handler = leptos_axum::render_route_with_context(
-        state.routes.clone().unwrap(),
-        move || {
-            provide_context(state1.options.clone());
-            provide_context(state1.server_signals.clone());
-        },
-        move || shell(options1.clone()),
-    );
-    handler(state, req).await.into_response()
-}
-
-async fn ws_handler(
+async fn server_fn_handler(
     State(state): State<AppState>,
     _path: Path<String>,
     _headers: HeaderMap,
@@ -52,6 +37,20 @@ async fn ws_handler(
         request,
     )
     .await
+}
+
+async fn leptos_routes_handler(state: State<AppState>, req: Request<AxumBody>) -> AxumResponse {
+    let state1 = state.0.clone();
+    let options1 = state.0.options.clone();
+    let handler = leptos_axum::render_route_with_context(
+        state.routes.clone().unwrap(),
+        move || {
+            provide_context(state1.options.clone());
+            provide_context(state1.server_signals.clone());
+        },
+        move || shell(options1.clone()),
+    );
+    handler(state, req).await.into_response()
 }
 
 #[tokio::main]
@@ -77,7 +76,10 @@ async fn main() {
     state.routes = Some(routes.clone());
 
     let app = Router::new()
-        .route("/api/{*fn_name}", post(ws_handler).get(ws_handler))
+        .route(
+            "/api/{*fn_name}",
+            post(server_fn_handler).get(server_fn_handler),
+        )
         .leptos_routes_with_handler(routes, get(leptos_routes_handler))
         .fallback(file_and_error_handler_with_context::<AppState, _>(
             move || provide_context(state2.server_signals.clone()),

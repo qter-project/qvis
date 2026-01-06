@@ -11,6 +11,7 @@ console_error_panic_hook = "0.1.7"
 console_log = "1.0.0"
 leptos = "0.8.15"
 qvis = { path = "../qvis" }
+puzzle_theory = { git = "https://github.com/qter-project/puzzle-theory", features = ["serde"] }
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 log = "0.4.29"
 leptos-use = "0.17.0"
@@ -31,9 +32,12 @@ ssr = [
     "dep:axum",
     "dep:leptos_axum",
     "leptos/ssr",
-    "leptos_ws/ssr"
+    "leptos_ws/ssr",
+    "leptos-use/ssr"
 ]
 
 [package.metadata.leptos]
+output-name = "qvis-app"
 lib-features = ["hydrate"]
 bin-features = ["ssr"]
+tailwind-input-file = "input.css"

@@ -12,7 +12,6 @@ pub fn Video() -> impl IntoView {
     let video_ref = NodeRef::<leptos::html::Video>::new();
     let UseUserMediaReturn {
         stream,
-        start,
         enabled,
         set_enabled,
         ..
@@ -20,8 +19,6 @@ pub fn Video() -> impl IntoView {
         UseUserMediaOptions::default()
             .video(VideoTrackConstraints::default().facing_mode(FacingMode::Environment)),
     );
-
-    start();
 
     Effect::new(move |_| {
         match stream.get() {
@@ -43,7 +40,7 @@ pub fn Video() -> impl IntoView {
             }
         });
     });
-    
+
     view! {
       <div class="flex flex-col gap-4 text-center">
         <div>

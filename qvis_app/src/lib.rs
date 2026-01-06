@@ -1,4 +1,6 @@
 pub mod app;
+pub mod take_picture;
+pub mod video;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
