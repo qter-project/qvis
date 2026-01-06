@@ -106,6 +106,10 @@ impl<I: Iterator<Item = (Permutation, f64)>> Iterator for PuzzleIter<I> {
 
         let item = self.heap.pop()?;
 
+        while self.heap.peek().map(|v| &*v.idxs) == Some(&item.idxs) {
+            self.heap.pop();
+        }
+
         let mut ll = 0.;
         let cycles = item
             .idxs
@@ -281,8 +285,10 @@ impl OrbitMatcher {
             }
         }
 
+        println!("{cost_matrix}");
+
         let mut heap = BinaryHeap::new();
-        heap.push(HeapElt::new(&cost_matrix));
+        heap.push(OrbitHeapElt::new(&cost_matrix));
 
         MatchIter {
             orbit_matcher: self,
@@ -298,10 +304,10 @@ impl OrbitMatcher {
 struct MatchIter<'a> {
     orbit_matcher: &'a OrbitMatcher,
     cost_matrix: Array3<f64>,
-    heap: BinaryHeap<HeapElt>,
+    heap: BinaryHeap<OrbitHeapElt>,
     facelet_count: usize,
     // Save the HeapElt we just returned instead of splitting it and putting it in the heap immediately
-    cache: Option<HeapElt>,
+    cache: Option<OrbitHeapElt>,
 }
 
 impl<'a> Iterator for MatchIter<'a> {
@@ -341,7 +347,8 @@ impl<'a> Iterator for MatchIter<'a> {
     }
 }
 
-struct HeapElt {
+#[derive(Debug)]
+struct OrbitHeapElt {
     allowed: Array3<bool>,
     cost_matrix_2d: Array2<Option<f64>>,
     oris_chosen: Array2<Option<usize>>,
@@ -349,8 +356,8 @@ struct HeapElt {
     matching: Vec<(usize, usize)>,
 }
 
-impl HeapElt {
-    fn new(cost_matrix_3d: &ArrayRef3<f64>) -> HeapElt {
+impl OrbitHeapElt {
+    fn new(cost_matrix_3d: &ArrayRef3<f64>) -> OrbitHeapElt {
         let maxima = cost_matrix_3d.map_axis(Axis(2), |v| {
             v.into_iter()
                 .copied()
@@ -364,7 +371,7 @@ impl HeapElt {
 
         let (matching, log_likelihood) = Self::mk_matching(&cost_matrix_2d, &oris_chosen).unwrap();
 
-        HeapElt {
+        OrbitHeapElt {
             allowed: Array3::from_elem(cost_matrix_3d.raw_dim(), true),
             cost_matrix_2d,
             oris_chosen,
@@ -392,7 +399,7 @@ impl HeapElt {
         Some((matching, log_likelihood))
     }
 
-    fn split(&self, cost_matrix_3d: &ArrayRef3<f64>) -> impl Iterator<Item = HeapElt> {
+    fn split(&self, cost_matrix_3d: &ArrayRef3<f64>) -> impl Iterator<Item = OrbitHeapElt> {
         self.matching
             .iter()
             .copied()
@@ -403,6 +410,7 @@ impl HeapElt {
                 let mut oris_chosen = self.oris_chosen.clone();
 
                 allowed[[i, j, ori]] = false;
+
                 let maybe_ori = cost_matrix_3d
                     .slice(s![i, j, ..])
                     .iter()
@@ -417,7 +425,7 @@ impl HeapElt {
 
                 let (matching, log_likelihood) = Self::mk_matching(&cost_matrix_2d, &oris_chosen)?;
 
-                Some(HeapElt {
+                Some(OrbitHeapElt {
                     allowed,
                     cost_matrix_2d,
                     oris_chosen,
@@ -428,21 +436,21 @@ impl HeapElt {
     }
 }
 
-impl PartialEq for HeapElt {
+impl PartialEq for OrbitHeapElt {
     fn eq(&self, other: &Self) -> bool {
         self.allowed == other.allowed
     }
 }
 
-impl Eq for HeapElt {}
+impl Eq for OrbitHeapElt {}
 
-impl PartialOrd for HeapElt {
+impl PartialOrd for OrbitHeapElt {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for HeapElt {
+impl Ord for OrbitHeapElt {
     fn cmp(&self, other: &Self) -> Ordering {
         if self.allowed == other.allowed {
             return Ordering::Equal;
@@ -454,9 +462,17 @@ impl Ord for HeapElt {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::array;
+    use std::collections::HashMap;
 
-    use crate::puzzle_matching::HeapElt;
+    use internment::ArcIntern;
+    use itertools::Itertools;
+    use ndarray::array;
+    use puzzle_theory::{
+        permutations::{Algorithm, Permutation},
+        puzzle_geometry::parsing::puzzle,
+    };
+
+    use crate::puzzle_matching::{Matcher, OrbitHeapElt, PuzzleIter, SavedIter};
 
     #[test]
     fn heap_elt() {
@@ -466,10 +482,9 @@ mod tests {
             [[-9., -10.], [-4., -10.], [-8., -10.],]
         ];
 
-        let elt = HeapElt::new(&cost_matrix_3d);
+        let elt = OrbitHeapElt::new(&cost_matrix_3d);
 
-        assert_eq!(elt.log_likelihood, -8. + -4. + -3.);
-
+        assert_eq!(elt.log_likelihood, -15.);
         assert_eq!(
             elt.cost_matrix_2d,
             array![
@@ -478,45 +493,352 @@ mod tests {
                 [Some(-9.), Some(-4.), Some(-8.)],
             ]
         );
-
         assert_eq!(
             elt.oris_chosen,
+            array![[0, 0, 0], [0, 0, 0], [0, 0, 0]].mapv(Some)
+        );
+        assert_eq!(
+            elt.allowed,
             array![
-                [Some(0), Some(0), Some(0),],
-                [Some(0), Some(0), Some(0),],
-                [Some(0), Some(0), Some(0),],
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
             ]
         );
-
         assert_eq!(elt.matching, vec![(0, 0), (2, 0), (1, 0)]);
 
-        let mut splits = elt.split(&cost_matrix_3d);
+        let splits = elt.split(&cost_matrix_3d).collect_vec();
+
+        assert_eq!(splits.len(), 3);
 
         assert_eq!(
-            splits.next().unwrap().cost_matrix_2d,
+            splits[0].cost_matrix_2d,
             array![
                 [Some(-10.), Some(-4.), Some(-7.)],
                 [Some(-6.), Some(-2.), Some(-3.)],
                 [Some(-9.), Some(-4.), Some(-8.)],
             ]
         );
+        assert_eq!(
+            splits[0].oris_chosen,
+            array![[1, 0, 0], [0, 0, 0], [0, 0, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits[0].allowed,
+            array![
+                [[false, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+            ]
+        );
+        assert_eq!(splits[0].matching, vec![(1, 0), (2, 0), (0, 0)]);
+        assert_eq!(splits[0].log_likelihood, -16.);
 
         assert_eq!(
-            splits.next().unwrap().cost_matrix_2d,
+            splits[1].cost_matrix_2d,
             array![
                 [Some(-8.), Some(-4.), Some(-7.)],
                 [Some(-6.), Some(-2.), Some(-10.)],
                 [Some(-9.), Some(-4.), Some(-8.)],
             ]
         );
+        assert_eq!(
+            splits[1].oris_chosen,
+            array![[0, 0, 0], [0, 0, 1], [0, 0, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits[1].allowed,
+            array![
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [false, true]],
+                [[true, true], [true, true], [true, true]],
+            ]
+        );
+        assert_eq!(splits[1].matching, vec![(2, 0), (0, 0), (1, 0)]);
+        assert_eq!(splits[1].log_likelihood, -17.);
 
         assert_eq!(
-            splits.next().unwrap().cost_matrix_2d,
+            splits[2].cost_matrix_2d,
             array![
                 [Some(-8.), Some(-4.), Some(-7.)],
                 [Some(-6.), Some(-2.), Some(-3.)],
                 [Some(-9.), Some(-10.), Some(-8.)],
             ]
         );
+        assert_eq!(
+            splits[2].oris_chosen,
+            array![[0, 0, 0], [0, 0, 0], [0, 1, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits[2].allowed,
+            array![
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [false, true], [true, true]],
+            ]
+        );
+        assert_eq!(splits[2].matching, vec![(1, 0), (2, 0), (0, 0)]);
+        assert_eq!(splits[2].log_likelihood, -16.);
+
+        let splits2 = splits[2].split(&cost_matrix_3d).collect_vec();
+
+        assert_eq!(splits2.len(), 3);
+
+        assert_eq!(
+            splits2[0].cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-10.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [Some(-9.), Some(-10.), Some(-8.)],
+            ]
+        );
+        assert_eq!(
+            splits2[0].oris_chosen,
+            array![[0, 1, 0], [0, 0, 0], [0, 1, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits2[0].allowed,
+            array![
+                [[true, true], [false, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [false, true], [true, true]],
+            ]
+        );
+        assert!(
+            [vec![(0, 0), (1, 0), (2, 0)], vec![(2, 0), (1, 0), (0, 0)]]
+                .contains(&splits2[0].matching)
+        );
+        assert_eq!(splits2[0].log_likelihood, -18.);
+
+        assert_eq!(
+            splits2[1].cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-10.)],
+                [Some(-9.), Some(-10.), Some(-8.)],
+            ]
+        );
+        assert_eq!(
+            splits2[1].oris_chosen,
+            array![[0, 0, 0], [0, 0, 1], [0, 1, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits2[1].allowed,
+            array![
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [false, true]],
+                [[true, true], [false, true], [true, true]],
+            ]
+        );
+        assert!(
+            [
+                vec![(0, 0), (1, 0), (2, 0)],
+                vec![(1, 0), (0, 0), (2, 0)],
+                vec![(2, 0), (1, 0), (0, 0)]
+            ]
+            .contains(&splits2[0].matching)
+        );
+        assert_eq!(splits2[1].log_likelihood, -18.);
+
+        assert_eq!(
+            splits2[2].cost_matrix_2d,
+            array![
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [Some(-10.), Some(-10.), Some(-8.)],
+            ]
+        );
+        assert_eq!(
+            splits2[2].oris_chosen,
+            array![[0, 0, 0], [0, 0, 0], [1, 1, 0]].mapv(Some)
+        );
+        assert_eq!(
+            splits2[2].allowed,
+            array![
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[false, true], [false, true], [true, true]],
+            ]
+        );
+        assert_eq!(splits2[2].matching, vec![(1, 0), (2, 0), (0, 1)]);
+        assert_eq!(splits2[2].log_likelihood, -17.);
+
+        let splits3 = splits2[2].split(&cost_matrix_3d).collect_vec();
+
+        assert_eq!(
+            splits3[2].cost_matrix_2d,
+            array![
+                // 8 2 8 18
+                // 4 6 8 18
+                [Some(-8.), Some(-4.), Some(-7.)],
+                [Some(-6.), Some(-2.), Some(-3.)],
+                [None, Some(-10.), Some(-8.)],
+            ]
+        );
+        assert_eq!(
+            splits3[2].oris_chosen,
+            array![
+                [Some(0), Some(0), Some(0)],
+                [Some(0), Some(0), Some(0)],
+                [None, Some(1), Some(0)]
+            ]
+        );
+        assert_eq!(
+            splits3[2].allowed,
+            array![
+                [[true, true], [true, true], [true, true]],
+                [[true, true], [true, true], [true, true]],
+                [[false, false], [false, true], [true, true]],
+            ]
+        );
+        assert!(
+            [vec![(0, 0), (1, 0), (2, 0)], vec![(1, 0), (0, 0), (2, 0)]]
+                .contains(&splits3[2].matching)
+        );
+        assert_eq!(splits3[2].log_likelihood, -18.);
+    }
+
+    #[test]
+    fn saved_iter() {
+        let mut iter = [
+            (Permutation::from_cycles(vec![vec![1, 2, 3]]), 1.),
+            (Permutation::from_cycles(vec![vec![2, 3]]), 2.),
+            (Permutation::from_cycles(vec![vec![1, 2]]), 3.),
+        ]
+        .into_iter();
+
+        let mut saved_iter = SavedIter {
+            saved: Vec::new(),
+            iter: iter.by_ref(),
+        };
+
+        assert_eq!(
+            saved_iter.get(0),
+            (&Permutation::from_cycles(vec![vec![1, 2, 3]]), 1.)
+        );
+        assert_eq!(
+            saved_iter.get(1),
+            (&Permutation::from_cycles(vec![vec![2, 3]]), 2.)
+        );
+        assert_eq!(
+            saved_iter.get(0),
+            (&Permutation::from_cycles(vec![vec![1, 2, 3]]), 1.)
+        );
+        assert_eq!(
+            saved_iter.get(1),
+            (&Permutation::from_cycles(vec![vec![2, 3]]), 2.)
+        );
+
+        assert_eq!(
+            iter.next(),
+            Some((Permutation::from_cycles(vec![vec![1, 2]]), 3.))
+        );
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn puzzle_iter() {
+        let a = [
+            (Permutation::from_cycles(vec![vec![0, 1]]), -1.),
+            (Permutation::from_cycles(vec![vec![1, 2]]), -3.),
+            (Permutation::from_cycles(vec![vec![0, 2]]), -100.),
+        ];
+        let b = [
+            (Permutation::from_cycles(vec![vec![10, 11]]), -2.),
+            (Permutation::from_cycles(vec![vec![11, 12]]), -5.),
+            (Permutation::from_cycles(vec![vec![10, 12]]), -100.),
+        ];
+
+        let mut puzzle_iter = PuzzleIter::new(Box::from([
+            SavedIter {
+                saved: Vec::new(),
+                iter: a.into_iter(),
+            },
+            SavedIter {
+                saved: Vec::new(),
+                iter: b.into_iter(),
+            },
+        ]));
+
+        assert_eq!(
+            puzzle_iter.next(),
+            Some((
+                Permutation::from_cycles(vec![vec![0, 1], vec![10, 11]]),
+                -3.
+            ))
+        );
+        assert_eq!(
+            puzzle_iter.next(),
+            Some((
+                Permutation::from_cycles(vec![vec![1, 2], vec![10, 11]]),
+                -5.
+            ))
+        );
+        assert_eq!(
+            puzzle_iter.next(),
+            Some((
+                Permutation::from_cycles(vec![vec![0, 1], vec![11, 12]]),
+                -6.
+            ))
+        );
+        assert_eq!(
+            puzzle_iter.next(),
+            Some((
+                Permutation::from_cycles(vec![vec![1, 2], vec![11, 12]]),
+                -8.
+            ))
+        );
+    }
+
+    // #[test]
+    fn solved() {
+        let geometry = puzzle("3x3").into_inner();
+
+        let mut baseline = HashMap::new();
+
+        for color in geometry.permutation_group().facelet_colors() {
+            baseline.insert(ArcIntern::clone(color), -2.);
+        }
+
+        let mut observation = vec![baseline; 48];
+
+        let purduehackers =
+            Algorithm::parse_from_string(geometry.permutation_group(), "R2 L2 D2 R2").unwrap();
+
+        for (spot, is) in purduehackers
+            .permutation()
+            .comes_from()
+            .iter_infinite()
+            .enumerate()
+            .take(48)
+        {
+            let v = observation[spot]
+                .get_mut(&geometry.permutation_group().facelet_colors()[is])
+                .unwrap();
+            *v += 1.;
+        }
+
+        println!("{observation:?}");
+
+        let matcher = Matcher::new(geometry);
+
+        for orbit in &matcher.orbits {
+            println!(
+                "{:?}",
+                orbit
+                    .sticker_color_piece
+                    .iter()
+                    .sorted_by_key(|((a, b), v)| (a.num(), a.orbit(), b, *v))
+                    .collect_vec()
+            );
+        }
+
+        println!(
+            "{:?}\n{:?}",
+            matcher.most_likely(&observation),
+            (purduehackers.permutation().clone(), -48.)
+        );
+
+        panic!()
     }
 }

@@ -150,8 +150,6 @@ fn relax_potentials(data: &mut [Element], costs: &ArrayRef2<Option<f64>>) -> boo
         return false;
     }
 
-    println!("{δ}");
-
     for elt in data {
         if elt.left.visited {
             elt.left.potential -= δ;

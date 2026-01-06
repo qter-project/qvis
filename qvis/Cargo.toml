@@ -7,4 +7,5 @@ edition = "2024"
 internment = { version = "0.8.6", features = ["arc"] }
 itertools = "0.14.0"
 ndarray = "0.17.1"
-puzzle_theory = { git = "https://github.com/qter-project/puzzle-theory" }
+# puzzle_theory = { git = "https://github.com/qter-project/puzzle-theory" }
+puzzle_theory = { path = "../../puzzle-theory" }

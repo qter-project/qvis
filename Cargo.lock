@@ -1991,6 +1991,23 @@ dependencies = [
 [[package]]
 name = "puzzle_theory"
 version = "0.1.0"
+dependencies = [
+ "algebraics",
+ "ariadne",
+ "bnum",
+ "boxcar",
+ "chumsky",
+ "internment",
+ "itertools",
+ "num-bigint",
+ "num-rational",
+ "phf",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "puzzle_theory"
+version = "0.1.0"
 source = "git+https://github.com/qter-project/puzzle-theory#45629a5d22f0f2d83e9de99a840f50ad4947fc37"
 dependencies = [
  "algebraics",
@@ -2045,7 +2062,7 @@ dependencies = [
  "internment",
  "itertools",
  "ndarray",
- "puzzle_theory",
+ "puzzle_theory 0.1.0",
 ]
 
 [[package]]
@@ -2061,7 +2078,7 @@ dependencies = [
  "leptos_axum",
  "leptos_ws",
  "log",
- "puzzle_theory",
+ "puzzle_theory 0.1.0 (git+https://github.com/qter-project/puzzle-theory)",
  "qvis",
  "serde",
  "tokio",
