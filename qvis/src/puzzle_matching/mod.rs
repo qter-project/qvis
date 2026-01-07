@@ -209,13 +209,14 @@ impl OrbitMatcher {
         for (i, piece) in orbit.pieces().iter().enumerate() {
             for sticker in piece.stickers() {
                 sticker_in_orbit[*sticker] = true;
+                let color = &group.facelet_colors()[*sticker];
 
                 let mut current_sticker = *sticker;
                 for ori in 0..ori_count {
+                    assert_eq!(ori_nums[*sticker] + ori, ori_nums[current_sticker]);
                     let ori_num = ori_nums[current_sticker];
-                    let color = ArcIntern::clone(&group.facelet_colors()[*sticker]);
 
-                    let pieces = sticker_color_piece.entry((ori_num, color)).or_default();
+                    let pieces = sticker_color_piece.entry((ori_num, ArcIntern::clone(color))).or_default();
                     pieces.push((i, ori));
 
                     current_sticker = piece.twist().goes_to().get(current_sticker);
@@ -285,8 +286,6 @@ impl OrbitMatcher {
             }
         }
 
-        println!("{cost_matrix}");
-
         let mut heap = BinaryHeap::new();
         heap.push(OrbitHeapElt::new(&cost_matrix));
 
@@ -330,7 +329,8 @@ impl<'a> Iterator for MatchIter<'a> {
         let mut mapping_comes_from = (0..self.facelet_count).collect_vec();
         for (spot, (is, ori)) in item.matching.iter().enumerate() {
             for sticker_spot in self.orbit_matcher.orbit.pieces()[spot].stickers() {
-                let target_ori = ori_nums[*sticker_spot] + *ori;
+                // This is minus because to make this piece twisted by `ori` amount, we have to have it so that the piece accrues `+ori` orientation when coming here, so if for example we were at sticker `+2` and `ori=1`, then sticker `1` would come to this location by adding one orientation. Therefore, we needd to subtract `ori`.
+                let target_ori = ori_nums[*sticker_spot] - *ori;
                 mapping_comes_from[*sticker_spot] = *self.orbit_matcher.orbit.pieces()[*is]
                     .stickers()
                     .iter()
@@ -790,7 +790,7 @@ mod tests {
         );
     }
 
-    // #[test]
+    #[test]
     fn solved() {
         let geometry = puzzle("3x3").into_inner();
 
@@ -818,27 +818,8 @@ mod tests {
             *v += 1.;
         }
 
-        println!("{observation:?}");
-
         let matcher = Matcher::new(geometry);
 
-        for orbit in &matcher.orbits {
-            println!(
-                "{:?}",
-                orbit
-                    .sticker_color_piece
-                    .iter()
-                    .sorted_by_key(|((a, b), v)| (a.num(), a.orbit(), b, *v))
-                    .collect_vec()
-            );
-        }
-
-        println!(
-            "{:?}\n{:?}",
-            matcher.most_likely(&observation),
-            (purduehackers.permutation().clone(), -48.)
-        );
-
-        panic!()
+        assert_eq!(matcher.most_likely(&observation), (purduehackers.permutation().clone(), -48.));
     }
 }
