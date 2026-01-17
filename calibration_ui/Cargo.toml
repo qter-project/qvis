@@ -1,0 +1,8 @@
+[package]
+name = "calibration_ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+opencv = "0.98.1"
