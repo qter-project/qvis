@@ -37,7 +37,7 @@ struct State {
 }
 
 fn c(x: i32, n: i32) -> i32 {
-    (x + n).checked_div_euclid(6).unwrap()
+    (x + n) / 6
 }
 
 fn perm6_from_number(mut n: u16) -> [i32; 6] {
