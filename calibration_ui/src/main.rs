@@ -1,7 +1,7 @@
 use opencv::{
     core::{BORDER_CONSTANT, CV_8UC1, CV_8UC3, Point, Rect, Scalar, Size},
     highgui, imgcodecs,
-    imgproc::{self, FILLED, FLOODFILL_FIXED_RANGE, FLOODFILL_MASK_ONLY, LINE_8},
+    imgproc::{self, FILLED, FLOODFILL_FIXED_RANGE, FLOODFILL_MASK_ONLY, LINE_8, MORPH_ELLIPSE},
     prelude::*,
 };
 use std::{
@@ -14,6 +14,7 @@ const EROSION_SIZE_TRACKBAR_NAME: &str = "Erosion size";
 const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [1, 5, 30];
 const UPPER_DIFF_TRACKBAR_NAME: &str = "Upper diff";
 const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
+const EROSION_KERNEL_MORPH_SHAPE: i32 = MORPH_ELLIPSE;
 const ERODE_DEF_ANCHOR: Point = Point::new(-1, -1);
 const XY_CIRCLE_RADIUS: i32 = 10;
 const MAX_PIXEL: i32 = 255;
@@ -99,16 +100,14 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
     };
 
     let distance = ((x - drag_x) as f64).hypot((y - drag_y) as f64) as i32 / 4;
-    // angle is between [-pi/2, pi/2]; find the absolute value and
-    // multiply by 1440/pi to get a range of [0, 720] throughout the
-    // full circle which is 6!
+    // angle is between [-pi, pi]; add pi and multiply by 360/pi to get a range
+    // of [0, 720] throughout the full circle which is 6!
     //
     // multiply it again by 20 to increase the periodicity
-    let angle =
-        (((y - drag_y) as f64).atan2((x - drag_x) as f64).abs() * 1440.0 / PI * 20.0) as u16;
+    let angle = (((y - drag_y) as f64).atan2((x - drag_x) as f64) + PI * 360.0 / PI * 20.0) as u16;
     let perm6 = perm6_from_number(angle);
 
-    state.grayscale_mask.set_to_def(&Scalar::all(0.0))?; // needed
+    Mat::roi_mut(&mut state.grayscale_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
     imgproc::flood_fill_mask(
         &mut state.img,
         &mut state.grayscale_mask,
@@ -123,15 +122,18 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         Scalar::from((
             c(
                 distance,
-                perm6[3] + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                perm6[3]
+                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
             c(
                 distance,
-                perm6[4] + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                perm6[4]
+                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
             c(
                 distance,
-                perm6[5] + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                perm6[5]
+                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
         )),
         4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
@@ -146,27 +148,28 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         BORDER_CONSTANT,
         imgproc::morphology_default_border_value()?,
     )?;
-    let to_dilate = if opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
-        *state
-            .eroded_grayscale_mask
-            .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL as u8;
+    let to_dilate =
+        if opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
+            *state
+                .eroded_grayscale_mask
+                .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL as u8;
 
-        state.tmp_mask.set_to_def(&Scalar::all(0.0))?;
-        imgproc::flood_fill_mask(
-            &mut Mat::roi_mut(&mut state.eroded_grayscale_mask, state.mask_roi)?,
-            &mut state.tmp_mask,
-            Point::new(drag_x, drag_y),
-            Scalar::default(), // ignored
-            &mut Rect::default(),
-            Scalar::all(0.0),
-            Scalar::all(0.0),
-            4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
-        )?;
-        std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
-        &state.eroded_grayscale_mask
-    } else {
-        &state.grayscale_mask
-    };
+            Mat::roi_mut(&mut state.tmp_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
+            imgproc::flood_fill_mask(
+                &mut Mat::roi_mut(&mut state.eroded_grayscale_mask, state.mask_roi)?,
+                &mut state.tmp_mask,
+                Point::new(drag_x, drag_y),
+                Scalar::default(), // ignored
+                &mut Rect::default(),
+                Scalar::all(0.0),
+                Scalar::all(0.0),
+                4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
+            )?;
+            std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+            &state.eroded_grayscale_mask
+        } else {
+            &state.grayscale_mask
+        };
 
     imgproc::dilate(
         to_dilate,
@@ -228,9 +231,11 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
 
 fn erosion_kernel_trackbar_callback(state: &mut State, pos: i32) -> opencv::Result<()> {
     state.erosion_kernel =
-        imgproc::get_structuring_element_def(imgproc::MORPH_CROSS, Size::new(pos, pos))?;
-    state.erosion_kernel_times_two =
-        imgproc::get_structuring_element_def(imgproc::MORPH_CROSS, Size::new(pos * 2, pos * 2))?;
+        imgproc::get_structuring_element_def(EROSION_KERNEL_MORPH_SHAPE, Size::new(pos, pos))?;
+    state.erosion_kernel_times_two = imgproc::get_structuring_element_def(
+        EROSION_KERNEL_MORPH_SHAPE,
+        Size::new(pos * 2, pos * 2),
+    )?;
     overlay_flood_fill(state)?;
     Ok(())
 }
@@ -336,7 +341,7 @@ fn main() -> opencv::Result<()> {
         if let Some(err) = state.lock().unwrap().err.take() {
             return Err(err);
         }
-        if highgui::wait_key(1000 / 30)? == 27 {
+        if highgui::wait_key(1000 / 10)? == 27 {
             break;
         }
     }
