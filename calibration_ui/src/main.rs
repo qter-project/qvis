@@ -17,7 +17,8 @@ const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
 const EROSION_KERNEL_MORPH_SHAPE: i32 = MORPH_ELLIPSE;
 const ERODE_DEF_ANCHOR: Point = Point::new(-1, -1);
 const XY_CIRCLE_RADIUS: i32 = 10;
-const MAX_PIXEL: i32 = 255;
+const MAX_PIXEL_VALUE: i32 = 255;
+const MAX_PIXELS: i32 = 600_000;
 
 #[derive(Default)]
 struct State {
@@ -30,8 +31,8 @@ struct State {
     erosion_kernel_times_two: Mat,
     displayed_img: Mat,
     mask_roi: Rect,
-    upper_flood_fill_diff: i32,
 
+    upper_flood_fill_diff: i32,
     maybe_drag_origin: Option<(i32, i32)>,
     maybe_xy: Option<(i32, i32)>,
     dragging: bool,
@@ -63,12 +64,10 @@ fn perm6_from_number(mut n: u16) -> [i32; 6] {
 fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Result<()> {
     match event {
         highgui::EVENT_MOUSEMOVE => {
-            if !state.dragging {
-                return Ok(());
+            if state.dragging {
+                state.maybe_xy = Some((x, y));
+                overlay_flood_fill(state)?;
             }
-            state.maybe_xy = Some((x, y));
-
-            overlay_flood_fill(state)?;
         }
         highgui::EVENT_LBUTTONDOWN => {
             if let Some((old_x, old_y)) = state.maybe_xy {
@@ -123,20 +122,23 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
             c(
                 distance,
                 perm6[3]
-                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                    + state.upper_flood_fill_diff * MAX_PIXEL_VALUE
+                        / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
             c(
                 distance,
                 perm6[4]
-                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                    + state.upper_flood_fill_diff * MAX_PIXEL_VALUE
+                        / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
             c(
                 distance,
                 perm6[5]
-                    + state.upper_flood_fill_diff * MAX_PIXEL / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+                    + state.upper_flood_fill_diff * MAX_PIXEL_VALUE
+                        / UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             ),
         )),
-        4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
+        4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL_VALUE << 8),
     )?;
 
     imgproc::erode(
@@ -152,7 +154,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         if opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
             *state
                 .eroded_grayscale_mask
-                .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL as u8;
+                .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL_VALUE as u8;
 
             Mat::roi_mut(&mut state.tmp_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
             imgproc::flood_fill_mask(
@@ -163,7 +165,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
                 &mut Rect::default(),
                 Scalar::all(0.0),
                 Scalar::all(0.0),
-                4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
+                4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL_VALUE << 8),
             )?;
             std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
             &state.eroded_grayscale_mask
@@ -202,7 +204,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         &mut state.displayed_img,
         Point::new(drag_x, drag_y),
         Point::new(x, y),
-        Scalar::all(MAX_PIXEL as f64),
+        Scalar::all(MAX_PIXEL_VALUE as f64),
         3,
         LINE_8,
         0,
@@ -211,7 +213,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         &mut state.displayed_img,
         Point::new(x, y),
         XY_CIRCLE_RADIUS,
-        Scalar::all(MAX_PIXEL as f64),
+        Scalar::all(MAX_PIXEL_VALUE as f64),
         FILLED,
         LINE_8,
         0,
@@ -220,7 +222,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         &mut state.displayed_img,
         Point::new(x, y),
         XY_CIRCLE_RADIUS / 2,
-        Scalar::from((0, 0, MAX_PIXEL)),
+        Scalar::from((0, 0, MAX_PIXEL_VALUE)),
         FILLED,
         LINE_8,
         0,
@@ -250,18 +252,15 @@ fn main() -> opencv::Result<()> {
     highgui::named_window(WINDOW_NAME, highgui::WINDOW_AUTOSIZE)?;
 
     let mut img = imgcodecs::imread_def("input.jpg")?;
-    
-    let max_pixels: f64 = 1_600_000.0;
-    let w = img.cols() as f64;
-    let h = img.rows() as f64;
+
+    let w = img.cols();
+    let h = img.rows();
     let pixels = w * h;
-    
-    if pixels > max_pixels {
-        let scale = (max_pixels / pixels).sqrt();
-    
-        let new_w = (w * scale).round() as i32;
-        let new_h = (h * scale).round() as i32;
-    
+
+    if pixels > MAX_PIXELS {
+        let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
+        let new_w = (w as f64 * scale).round() as i32;
+        let new_h = (h as f64 * scale).round() as i32;
         let mut resized = Mat::default();
         imgproc::resize(
             &img,
@@ -271,10 +270,9 @@ fn main() -> opencv::Result<()> {
             0.0,
             imgproc::INTER_AREA, // best for downscaling
         )?;
-    
         img = resized;
     }
-    
+
     let displayed_img = Mat::zeros(img.rows(), img.cols(), CV_8UC3)?.to_mat()?;
     let colored_eroded_mask_cropped = displayed_img.clone();
     let grayscale_mask = Mat::zeros(img.rows() + 2, img.cols() + 2, CV_8UC1)?.to_mat()?;
