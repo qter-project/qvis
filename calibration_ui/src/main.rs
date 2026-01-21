@@ -249,7 +249,32 @@ fn light_tolerance_trackbar_callback(state: &mut State, pos: i32) -> opencv::Res
 fn main() -> opencv::Result<()> {
     highgui::named_window(WINDOW_NAME, highgui::WINDOW_AUTOSIZE)?;
 
-    let img = imgcodecs::imread("input.png", imgcodecs::IMREAD_COLOR)?;
+    let mut img = imgcodecs::imread_def("input.jpg")?;
+    
+    let max_pixels: f64 = 1_600_000.0;
+    let w = img.cols() as f64;
+    let h = img.rows() as f64;
+    let pixels = w * h;
+    
+    if pixels > max_pixels {
+        let scale = (max_pixels / pixels).sqrt();
+    
+        let new_w = (w * scale).round() as i32;
+        let new_h = (h * scale).round() as i32;
+    
+        let mut resized = Mat::default();
+        imgproc::resize(
+            &img,
+            &mut resized,
+            Size::new(new_w, new_h),
+            0.0,
+            0.0,
+            imgproc::INTER_AREA, // best for downscaling
+        )?;
+    
+        img = resized;
+    }
+    
     let displayed_img = Mat::zeros(img.rows(), img.cols(), CV_8UC3)?.to_mat()?;
     let colored_eroded_mask_cropped = displayed_img.clone();
     let grayscale_mask = Mat::zeros(img.rows() + 2, img.cols() + 2, CV_8UC1)?.to_mat()?;
