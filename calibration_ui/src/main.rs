@@ -11,7 +11,7 @@ use std::{
 
 const WINDOW_NAME: &str = "Qvis Sticker Calibration";
 const EROSION_SIZE_TRACKBAR_NAME: &str = "Erosion size";
-const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [1, 5, 20];
+const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [1, 5, 30];
 const UPPER_DIFF_TRACKBAR_NAME: &str = "Upper diff";
 const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
 const ERODE_DEF_ANCHOR: Point = Point::new(-1, -1);
@@ -146,29 +146,30 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         BORDER_CONSTANT,
         imgproc::morphology_default_border_value()?,
     )?;
-    if !opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
-        state.eroded_grayscale_mask = state.grayscale_mask.clone();
-    }
+    let to_dilate = if opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
+        *state
+            .eroded_grayscale_mask
+            .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL as u8;
 
-    *state
-        .eroded_grayscale_mask
-        .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL as u8;
-
-    state.tmp_mask.set_to_def(&Scalar::all(0.0))?;
-    imgproc::flood_fill_mask(
-        &mut Mat::roi_mut(&mut state.eroded_grayscale_mask, state.mask_roi)?,
-        &mut state.tmp_mask,
-        Point::new(drag_x, drag_y),
-        Scalar::default(), // ignored
-        &mut Rect::default(),
-        Scalar::all(0.0),
-        Scalar::all(0.0),
-        4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
-    )?;
-    std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+        state.tmp_mask.set_to_def(&Scalar::all(0.0))?;
+        imgproc::flood_fill_mask(
+            &mut Mat::roi_mut(&mut state.eroded_grayscale_mask, state.mask_roi)?,
+            &mut state.tmp_mask,
+            Point::new(drag_x, drag_y),
+            Scalar::default(), // ignored
+            &mut Rect::default(),
+            Scalar::all(0.0),
+            Scalar::all(0.0),
+            4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL << 8),
+        )?;
+        std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+        &state.eroded_grayscale_mask
+    } else {
+        &state.grayscale_mask
+    };
 
     imgproc::dilate(
-        &state.eroded_grayscale_mask,
+        to_dilate,
         &mut state.tmp_mask,
         &state.erosion_kernel_times_two,
         ERODE_DEF_ANCHOR,
