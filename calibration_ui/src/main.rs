@@ -11,9 +11,13 @@ use std::{
 
 const WINDOW_NAME: &str = "Qvis Sticker Calibration";
 const EROSION_SIZE_TRACKBAR_NAME: &str = "Erosion size";
+const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [1, 5, 20];
+const UPPER_DIFF_TRACKBAR_NAME: &str = "Upper diff";
+const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
 const ERODE_DEF_ANCHOR: Point = Point::new(-1, -1);
 const XY_CIRCLE_RADIUS: i32 = 10;
 
+#[derive(Default)]
 struct State {
     img: Mat,
     tmp_mask: Mat,
@@ -21,9 +25,11 @@ struct State {
     eroded_grayscale_mask: Mat,
     colored_eroded_mask_cropped: Mat,
     erosion_kernel: Mat,
-    mask_roi: Rect,
+    erosion_kernel_times_two: Mat,
     displayed_img: Mat,
+    mask_roi: Rect,
     upper_flood_fill_diff: i32,
+
     maybe_drag_origin: Option<(i32, i32)>,
     maybe_xy: Option<(i32, i32)>,
     dragging: bool,
@@ -55,39 +61,12 @@ fn perm6_from_number(mut n: u16) -> [i32; 6] {
 fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Result<()> {
     match event {
         highgui::EVENT_MOUSEMOVE => {
-            let Some((drag_x, drag_y)) = state.maybe_drag_origin else {
-                return Ok(());
-            };
             if !state.dragging {
                 return Ok(());
             }
             state.maybe_xy = Some((x, y));
 
-            let distance = ((x - drag_x) as f64).hypot((y - drag_y) as f64) as i32;
-            let angle =
-                (((y - drag_y) as f64).atan2((x - drag_x) as f64).abs() * 1440.0 / PI) as u16;
-            let perm6 = perm6_from_number(angle);
-
-            state.grayscale_mask.set_to_def(&Scalar::all(0.0))?; // needed
-            imgproc::flood_fill_mask(
-                &mut state.img,
-                &mut state.grayscale_mask,
-                Point::new(drag_x, drag_y),
-                Scalar::default(), // ignored
-                &mut Rect::default(),
-                Scalar::from((
-                    c(distance, perm6[0]),
-                    c(distance, perm6[1]),
-                    c(distance, perm6[2]),
-                )),
-                Scalar::from((
-                    c(distance, perm6[3] + state.upper_flood_fill_diff),
-                    c(distance, perm6[4] + state.upper_flood_fill_diff),
-                    c(distance, perm6[5] + state.upper_flood_fill_diff),
-                )),
-                4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (255 << 8),
-            )?;
-            post_flood_fill(state)?;
+            overlay_flood_fill(state)?;
         }
         highgui::EVENT_LBUTTONDOWN => {
             if let Some((old_x, old_y)) = state.maybe_xy {
@@ -110,13 +89,45 @@ fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Resu
     Ok(())
 }
 
-fn post_flood_fill(state: &mut State) -> opencv::Result<()> {
+fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
     let Some((drag_x, drag_y)) = state.maybe_drag_origin else {
         return Ok(());
     };
     let Some((x, y)) = state.maybe_xy else {
         return Ok(());
     };
+
+    let distance = ((x - drag_x) as f64).hypot((y - drag_y) as f64) as i32 / 4;
+    // angle is between [-pi/2, pi/2]; find the absolute value and
+    // multiply by 1440/pi to get a range of [0, 720] throughout the
+    // full circle which is 6!
+    //
+    // multiply it again by 20 to increase the periodicity
+    let angle =
+        (((y - drag_y) as f64).atan2((x - drag_x) as f64).abs() * 1440.0 / PI * 20.0) as u16;
+    let perm6 = perm6_from_number(angle);
+
+    state.grayscale_mask.set_to_def(&Scalar::all(0.0))?; // needed
+    imgproc::flood_fill_mask(
+        &mut state.img,
+        &mut state.grayscale_mask,
+        Point::new(drag_x, drag_y),
+        Scalar::default(), // ignored
+        &mut Rect::default(),
+        Scalar::from((
+            c(distance, perm6[0]),
+            c(distance, perm6[1]),
+            c(distance, perm6[2]),
+        )),
+        Scalar::from((
+            // 255 / 5
+            c(distance, perm6[3] + state.upper_flood_fill_diff * 51),
+            c(distance, perm6[4] + state.upper_flood_fill_diff * 51),
+            c(distance, perm6[5] + state.upper_flood_fill_diff * 51),
+        )),
+        4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (255 << 8),
+    )?;
+
     imgproc::erode(
         &state.grayscale_mask,
         &mut state.eroded_grayscale_mask,
@@ -147,13 +158,27 @@ fn post_flood_fill(state: &mut State) -> opencv::Result<()> {
     )?;
     std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
 
+    imgproc::dilate(
+        &state.eroded_grayscale_mask,
+        &mut state.tmp_mask,
+        &state.erosion_kernel_times_two,
+        ERODE_DEF_ANCHOR,
+        1,
+        BORDER_CONSTANT,
+        imgproc::morphology_default_border_value()?,
+    )?;
+    std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+
     let eroded_grayscale_mask_cropped = Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?;
-    let channels = opencv::core::Vector::<Mat>::from_iter([
+    let colored_eroded_mask_cropped_channels = opencv::core::Vector::<Mat>::from_iter([
         eroded_grayscale_mask_cropped.clone_pointee(),
         Mat::zeros(state.img.rows(), state.img.cols(), CV_8UC1)?.to_mat()?,
         eroded_grayscale_mask_cropped.clone_pointee(),
     ]);
-    opencv::core::merge(&channels, &mut state.colored_eroded_mask_cropped)?;
+    opencv::core::merge(
+        &colored_eroded_mask_cropped_channels,
+        &mut state.colored_eroded_mask_cropped,
+    )?;
 
     opencv::core::add_def(
         &state.img,
@@ -193,8 +218,16 @@ fn post_flood_fill(state: &mut State) -> opencv::Result<()> {
 
 fn erosion_kernel_trackbar_callback(state: &mut State, pos: i32) -> opencv::Result<()> {
     state.erosion_kernel =
-        imgproc::get_structuring_element_def(imgproc::MORPH_DIAMOND, Size::new(pos, pos))?;
-    post_flood_fill(state)?;
+        imgproc::get_structuring_element_def(imgproc::MORPH_CROSS, Size::new(pos, pos))?;
+    state.erosion_kernel_times_two =
+        imgproc::get_structuring_element_def(imgproc::MORPH_CROSS, Size::new(pos * 2, pos * 2))?;
+    overlay_flood_fill(state)?;
+    Ok(())
+}
+
+fn light_tolerance_trackbar_callback(state: &mut State, pos: i32) -> opencv::Result<()> {
+    state.upper_flood_fill_diff = pos;
+    overlay_flood_fill(state)?;
     Ok(())
 }
 
@@ -209,24 +242,21 @@ fn main() -> opencv::Result<()> {
     let tmp_mask = grayscale_mask.clone();
     let mask_roi = Rect::new(1, 1, img.cols(), img.rows());
     let erosion_kernel = Mat::default();
-
-    highgui::imshow(WINDOW_NAME, &img)?;
+    let erosion_kernel_times_two = Mat::default();
 
     let state = Arc::new(Mutex::new(State {
         img,
         grayscale_mask,
         eroded_grayscale_mask,
         erosion_kernel,
+        erosion_kernel_times_two,
         colored_eroded_mask_cropped,
         mask_roi,
         tmp_mask,
         displayed_img,
-        upper_flood_fill_diff: 20,
-        maybe_drag_origin: None,
-        maybe_xy: None,
-        dragging: false,
-        err: None,
+        ..Default::default()
     }));
+
     {
         let state = Arc::clone(&state);
         highgui::set_mouse_callback(
@@ -245,7 +275,7 @@ fn main() -> opencv::Result<()> {
             EROSION_SIZE_TRACKBAR_NAME,
             WINDOW_NAME,
             None,
-            20,
+            EROSION_SIZE_TRACKBAR_MINDEFMAX[2],
             Some(Box::new(move |pos| {
                 let mut state = state.lock().unwrap();
                 if let Err(e) = erosion_kernel_trackbar_callback(&mut state, pos) {
@@ -253,9 +283,44 @@ fn main() -> opencv::Result<()> {
                 }
             })),
         )?;
-        highgui::set_trackbar_pos(EROSION_SIZE_TRACKBAR_NAME, WINDOW_NAME, 5)?;
-        highgui::set_trackbar_min(EROSION_SIZE_TRACKBAR_NAME, WINDOW_NAME, 1)?;
+        highgui::set_trackbar_pos(
+            EROSION_SIZE_TRACKBAR_NAME,
+            WINDOW_NAME,
+            EROSION_SIZE_TRACKBAR_MINDEFMAX[1],
+        )?;
+        highgui::set_trackbar_min(
+            EROSION_SIZE_TRACKBAR_NAME,
+            WINDOW_NAME,
+            EROSION_SIZE_TRACKBAR_MINDEFMAX[0],
+        )?;
     }
+    {
+        let state = Arc::clone(&state);
+        highgui::create_trackbar(
+            UPPER_DIFF_TRACKBAR_NAME,
+            WINDOW_NAME,
+            None,
+            UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
+            Some(Box::new(move |pos| {
+                let mut state = state.lock().unwrap();
+                if let Err(e) = light_tolerance_trackbar_callback(&mut state, pos) {
+                    state.err = Some(e);
+                }
+            })),
+        )?;
+        highgui::set_trackbar_pos(
+            UPPER_DIFF_TRACKBAR_NAME,
+            WINDOW_NAME,
+            UPPER_DIFF_TRACKBAR_MINDEFMAX[1],
+        )?;
+        highgui::set_trackbar_min(
+            UPPER_DIFF_TRACKBAR_NAME,
+            WINDOW_NAME,
+            UPPER_DIFF_TRACKBAR_MINDEFMAX[0],
+        )?;
+    }
+    
+    highgui::imshow(WINDOW_NAME, &state.lock().unwrap().img)?;
 
     loop {
         if let Some(err) = state.lock().unwrap().err.take() {
