@@ -24,6 +24,12 @@ axum = { version = "0.8.8", features = ["macros"], optional = true }
 axum-server = { version = "0.8.0", features = ["tls-rustls"], optional = true }
 web-sys = { version = "0.3.83", features = ["CanvasRenderingContext2d", "ImageData"] }
 
+[dependencies.opencv]
+version = "0.98.1"
+default-features = false
+features = ["highgui", "imgcodecs", "imgproc"]
+optional = true
+
 [features]
 hydrate = [
     "leptos/hydrate",
@@ -34,6 +40,7 @@ ssr = [
     "dep:axum",
     "dep:axum-server",
     "dep:leptos_axum",
+    "dep:opencv",
     "leptos/ssr",
     "leptos_ws/ssr",
     "leptos-use/ssr"

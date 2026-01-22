@@ -12,7 +12,7 @@ use leptos_axum::{
     generate_route_list_with_exclusions_and_ssg_and_context, handle_server_fns_with_context,
 };
 use leptos_ws::WsSignals;
-use qvis_app::app::*;
+use qvis_app::app::{App, shell};
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
@@ -89,9 +89,10 @@ async fn main() {
 
     log!("listening on https://{addr}");
 
-    let config = RustlsConfig::from_pem_file("qvis_app/qvis_appCA.pem", "qvis_app/qvis_appCA-key.pem")
-        .await
-        .unwrap();
+    let config =
+        RustlsConfig::from_pem_file("qvis_app/qvis_appCA.pem", "qvis_app/qvis_appCA-key.pem")
+            .await
+            .unwrap();
     axum_server::bind_rustls(addr, config)
         .serve(app.into_make_service())
         .await

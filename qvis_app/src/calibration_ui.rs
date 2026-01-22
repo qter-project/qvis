@@ -4,6 +4,8 @@ use opencv::{
     imgproc::{self, FILLED, FLOODFILL_FIXED_RANGE, FLOODFILL_MASK_ONLY, LINE_8, MORPH_ELLIPSE},
     prelude::*,
 };
+use puzzle_theory::puzzle_geometry::PuzzleGeometry;
+use qvis::Pixel;
 use std::{
     f64::consts::PI,
     sync::{Arc, Mutex},
@@ -71,8 +73,8 @@ fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Resu
         }
         highgui::EVENT_LBUTTONDOWN => {
             if let Some((old_x, old_y)) = state.maybe_xy {
-                let distance = ((old_x - x) as f64).hypot((old_y - y) as f64) as i32;
-                if distance > XY_CIRCLE_RADIUS {
+                let distance = f64::from(old_x - x).hypot(f64::from(old_y - y));
+                if distance > f64::from(XY_CIRCLE_RADIUS) {
                     state.maybe_drag_origin = Some((x, y));
                 }
             } else {
@@ -98,12 +100,14 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         return Ok(());
     };
 
-    let distance = ((x - drag_x) as f64).hypot((y - drag_y) as f64) as i32 / 3;
+    #[allow(clippy::cast_possible_truncation)]
+    let distance = f64::from(x - drag_x).hypot(f64::from(y - drag_y)) as i32 / 3;
     // angle is between [-pi, pi]; add pi and multiply by 360/pi to get a range
     // of [0, 720] throughout the full circle which is 6!
     //
     // multiply it again by 20 to increase the periodicity
-    let angle = (((y - drag_y) as f64).atan2((x - drag_x) as f64) + PI * 360.0 / PI * 20.0) as u16;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let angle = (f64::from(y - drag_y).atan2(f64::from(x - drag_x)) + PI * 360.0 / PI * 20.0) as u16;
     let perm6 = perm6_from_number(angle);
 
     Mat::roi_mut(&mut state.grayscale_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
@@ -154,7 +158,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         if opencv::core::has_non_zero(&Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?)? {
             *state
                 .eroded_grayscale_mask
-                .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL_VALUE as u8;
+                .at_2d_mut::<u8>(drag_y + 1, drag_x + 1)? = MAX_PIXEL_VALUE.try_into().unwrap();
 
             Mat::roi_mut(&mut state.tmp_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
             imgproc::flood_fill_mask(
@@ -204,7 +208,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         &mut state.displayed_img,
         Point::new(drag_x, drag_y),
         Point::new(x, y),
-        Scalar::all(MAX_PIXEL_VALUE as f64),
+        Scalar::all(f64::from(MAX_PIXEL_VALUE)),
         3,
         LINE_8,
         0,
@@ -213,7 +217,7 @@ fn overlay_flood_fill(state: &mut State) -> opencv::Result<()> {
         &mut state.displayed_img,
         Point::new(x, y),
         XY_CIRCLE_RADIUS,
-        Scalar::all(MAX_PIXEL_VALUE as f64),
+        Scalar::all(f64::from(MAX_PIXEL_VALUE)),
         FILLED,
         LINE_8,
         0,
@@ -248,7 +252,13 @@ fn light_tolerance_trackbar_callback(state: &mut State, pos: i32) -> opencv::Res
     Ok(())
 }
 
-fn main() -> opencv::Result<()> {
+/// Displays a UI for calibrating the sticker detection parameters. Returns the
+/// calibrated pixels on success.
+/// 
+/// # Errors
+/// 
+/// This function will return an `OpenCV` error.
+pub fn calibration_ui(puzzle_geometry: Arc<PuzzleGeometry>) -> Result<Box<[Pixel]>, opencv::Error> {
     highgui::named_window(
         WINDOW_NAME,
         highgui::WINDOW_NORMAL | highgui::WINDOW_KEEPRATIO | highgui::WINDOW_GUI_EXPANDED,
@@ -256,7 +266,7 @@ fn main() -> opencv::Result<()> {
     highgui::set_window_property(
         WINDOW_NAME,
         highgui::WND_PROP_FULLSCREEN,
-        highgui::WINDOW_FULLSCREEN as f64,
+        f64::from(highgui::WINDOW_FULLSCREEN),
     )?;
 
     let mut img = imgcodecs::imread_def("input.jpg")?;
@@ -266,9 +276,11 @@ fn main() -> opencv::Result<()> {
     let pixels = w * h;
 
     if pixels > MAX_PIXELS {
-        let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
-        let new_w = (w as f64 * scale).round() as i32;
-        let new_h = (h as f64 * scale).round() as i32;
+        let scale = (f64::from(MAX_PIXELS) / f64::from(pixels)).sqrt();
+        #[allow(clippy::cast_possible_truncation)]
+        let new_w = (f64::from(w) * scale).round() as i32;
+        #[allow(clippy::cast_possible_truncation)]
+        let new_h = (f64::from(h) * scale).round() as i32;
         let mut resized = Mat::default();
         imgproc::resize(
             &img,
@@ -292,14 +304,14 @@ fn main() -> opencv::Result<()> {
 
     let state = Arc::new(Mutex::new(State {
         img,
+        tmp_mask,
         grayscale_mask,
         eroded_grayscale_mask,
+        colored_eroded_mask_cropped,
         erosion_kernel,
         erosion_kernel_times_two,
-        colored_eroded_mask_cropped,
-        mask_roi,
-        tmp_mask,
         displayed_img,
+        mask_roi,
         ..Default::default()
     }));
 
@@ -308,6 +320,7 @@ fn main() -> opencv::Result<()> {
         highgui::set_mouse_callback(
             WINDOW_NAME,
             Some(Box::new(move |event, x, y, _flags| {
+                #[allow(clippy::missing_panics_doc)]
                 let mut state = state.lock().unwrap();
                 if let Err(e) = mouse_callback(&mut state, event, x, y) {
                     state.err = Some(e);
@@ -323,6 +336,7 @@ fn main() -> opencv::Result<()> {
             None,
             EROSION_SIZE_TRACKBAR_MINDEFMAX[2],
             Some(Box::new(move |pos| {
+                #[allow(clippy::missing_panics_doc)]
                 let mut state = state.lock().unwrap();
                 if let Err(e) = erosion_kernel_trackbar_callback(&mut state, pos) {
                     state.err = Some(e);
@@ -348,6 +362,7 @@ fn main() -> opencv::Result<()> {
             None,
             UPPER_DIFF_TRACKBAR_MINDEFMAX[2],
             Some(Box::new(move |pos| {
+                #[allow(clippy::missing_panics_doc)]
                 let mut state = state.lock().unwrap();
                 if let Err(e) = light_tolerance_trackbar_callback(&mut state, pos) {
                     state.err = Some(e);
@@ -366,9 +381,12 @@ fn main() -> opencv::Result<()> {
         )?;
     }
 
+    #[allow(clippy::missing_panics_doc)]
     highgui::imshow(WINDOW_NAME, &state.lock().unwrap().img)?;
 
+    dbg!(1);
     loop {
+        #[allow(clippy::missing_panics_doc)]
         if let Some(err) = state.lock().unwrap().err.take() {
             return Err(err);
         }
@@ -377,5 +395,5 @@ fn main() -> opencv::Result<()> {
         }
     }
 
-    Ok(())
+    todo!()
 }

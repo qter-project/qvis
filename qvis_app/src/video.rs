@@ -1,26 +1,37 @@
-use leptos::{ev::canplay, prelude::*};
+use crate::take_picture::TakePictureMessage;
+use leptos::{ev::canplay, html, prelude::*};
 use leptos_use::{
     FacingMode, UseEventListenerOptions, UseUserMediaOptions, UseUserMediaReturn,
     VideoTrackConstraints, use_event_listener_with_options, use_user_media_with_options,
 };
-use log::{error, info};
+use log::{info, warn};
+use puzzle_theory::puzzle_geometry::parsing::puzzle;
+use qvis::CVProcessor;
 use wasm_bindgen::JsCast;
-use web_sys::CanvasRenderingContext2d;
+use web_sys::{CanvasRenderingContext2d, js_sys};
 
 const WIDTH: u32 = 350;
 
 #[component]
-pub fn Video(take_picture_command: ReadSignal<()>) -> impl IntoView {
-    let video_ref = NodeRef::<leptos::html::Video>::new();
-    let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+pub fn Video(
+    take_picture_resp: Callback<TakePictureMessage>,
+    take_picture_command: ReadSignal<()>,
+) -> impl IntoView {
+    let video_ref = NodeRef::<html::Video>::new();
+    let canvas_ref = NodeRef::<html::Canvas>::new();
     let UseUserMediaReturn {
         stream,
+        enabled,
         set_enabled,
         ..
     } = use_user_media_with_options(
         UseUserMediaOptions::default()
             .video(VideoTrackConstraints::default().facing_mode(FacingMode::Environment)), // .enabled((enabled, set_enabled).into()),
     );
+
+    let puzzle_geometry = puzzle("3x3").into_inner();
+    let mut cv: Option<CVProcessor> = None;
+    let mut ctx: Option<CanvasRenderingContext2d> = None;
 
     Effect::new(move |_| {
         // let media = use_window()
@@ -36,7 +47,7 @@ pub fn Video(take_picture_command: ReadSignal<()>) -> impl IntoView {
                 Some(s)
             }
             Some(Err(e)) => {
-                error!("Failed to get media stream: {e:?}");
+                warn!("Failed to get media stream: {e:?}");
                 None
             }
             None => {
@@ -57,24 +68,35 @@ pub fn Video(take_picture_command: ReadSignal<()>) -> impl IntoView {
     Effect::watch(
         move || take_picture_command.get(),
         move |(), _, _| {
-            let (Some(canvas_ref), Some(video_ref)) =
-                (canvas_ref.get_untracked(), video_ref.get_untracked())
-            else {
+            let canvas_ref = canvas_ref.get_untracked().unwrap();
+            let video_ref = video_ref.get_untracked().unwrap();
+            
+            let Some(ref cv) = cv else {
+                take_picture_resp.run(TakePictureMessage::NeedsCalibration);
                 return;
             };
-            let ctx = canvas_ref
-                .get_context("2d")
-                .unwrap()
-                .unwrap()
-                .dyn_into::<CanvasRenderingContext2d>()
-                .unwrap();
+            
+            if !enabled.get() {
+                set_enabled.set(true);
+            }
+
+            let ctx = ctx.get_or_insert_with(|| {
+                let opts = js_sys::Object::new();
+                js_sys::Reflect::set(&opts, &"willReadFrequently".into(), &true.into()).unwrap();
+                canvas_ref
+                    .get_context_with_context_options("2d", &opts)
+                    .unwrap()
+                    .unwrap()
+                    .dyn_into::<CanvasRenderingContext2d>()
+                    .unwrap()
+            });
 
             ctx.draw_image_with_html_video_element_and_dw_and_dh(
                 &video_ref,
                 0.0,
                 0.0,
-                f64::from(canvas_ref.width()),
-                f64::from(canvas_ref.height()),
+                canvas_ref.width().into(),
+                canvas_ref.height().into(),
             )
             .unwrap();
 
@@ -101,7 +123,8 @@ pub fn Video(take_picture_command: ReadSignal<()>) -> impl IntoView {
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
-            info!("{:?}", pixels[10]);
+            let permutation = cv.process_image(pixels).0;
+            take_picture_resp.run(TakePictureMessage::PermutationResult(permutation));
         },
         false,
     );

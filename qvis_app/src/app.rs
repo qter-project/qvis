@@ -5,8 +5,6 @@ use crate::{
 use leptos::prelude::*;
 use leptos_ws::ChannelSignal;
 use log::{LevelFilter, Log, Metadata, Record, info};
-use puzzle_theory::puzzle_geometry::parsing::puzzle;
-use qvis::CVProcessor;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -41,56 +39,55 @@ pub fn App() -> impl IntoView {
     }
 
     leptos_ws::provide_websocket();
-    let puzzle_geometry = puzzle("3x3").into_inner();
-    let cv = CVProcessor::new(puzzle_geometry, 0);
 
     let take_picture_channel = ChannelSignal::new(TAKE_PICTURE_CHANNEL).unwrap();
+    let take_picture_channel2 = take_picture_channel.clone();
+
     let messages_container = NodeRef::<leptos::html::Div>::new();
     let (overflowing, set_overflowing) = signal(true);
     let (take_picture_command, set_take_picture) = signal(());
-    
+
     let take_picture = move |_| set_take_picture.set(());
 
+    let take_picture_resp = Callback::new(move |resp| {
+        take_picture_channel2
+            .send_message(resp)
+            .unwrap();
+    });
+
     take_picture_channel
-        .clone()
         .on_client(move |msg: &TakePictureMessage| {
             info!("Recieved message {msg:#?}");
             let TakePictureMessage::TakePicture = msg else {
                 return;
             };
-            let picture = cv.process_image(Box::new([])).0;
-            take_picture_channel
-                .send_message(TakePictureMessage::PictureResult(Ok(picture)))
-                .unwrap();
+            set_take_picture.set(());
         })
         .unwrap();
 
-    Effect::watch(
-        move || messages.get(),
-        move |_, _, _| {
-            let Some(container) = messages_container.get_untracked() else {
-                return;
-            };
-            let scroll_height = container.scroll_height();
-            let client_height = container.client_height();
-            set_overflowing.set(scroll_height > client_height);
-            container.set_scroll_top(scroll_height);
-        },
-        false,
-    );
+    Effect::new(move |_| {
+        messages.get();
+        let Some(container) = messages_container.get() else {
+            return;
+        };
+        let scroll_height = container.scroll_height();
+        let client_height = container.client_height();
+        set_overflowing.set(scroll_height > client_height);
+        container.set_scroll_top(scroll_height);
+    });
 
     view! {
       <header class="mb-5 font-sans text-4xl font-bold tracking-wider text-center bg-[rgb(47,48,80)] leading-20">
         "QVIS"
       </header>
       <main class="flex flex-col gap-4 justify-center mr-4 ml-4 text-center">
-        <Video take_picture_command />
+        <Video take_picture_resp take_picture_command />
         <button on:click=take_picture>HERE</button>
         "Messages:"
-        <div class="relative font-mono text-left border-2 border-gray-300 h-72">
+        <div class="relative h-72 font-mono text-left border-2 border-gray-300">
           <div
             class:hidden=move || !overflowing.get()
-            class="absolute top-0 right-0 left-0 mr-3 from-black to-transparent pointer-events-none h-15 bg-linear-to-b"
+            class="absolute top-0 left-0 right-3 from-black to-transparent pointer-events-none h-15 bg-linear-to-b"
           />
           <div
             node_ref=messages_container

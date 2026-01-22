@@ -4,6 +4,8 @@
 pub mod app;
 pub mod take_picture;
 pub mod video;
+#[cfg(feature = "ssr")]
+pub mod calibration_ui;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
