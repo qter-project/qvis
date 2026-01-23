@@ -1,11 +1,11 @@
 use crate::{
-    take_picture::{TAKE_PICTURE_CHANNEL, TakePictureMessage},
+    messages_logger::MessagesLogger,
+    server_fns::{TAKE_PICTURE_CHANNEL, TakePictureMessage},
     video::Video,
 };
 use leptos::prelude::*;
 use leptos_ws::ChannelSignal;
-use log::{LevelFilter, Log, Metadata, Record, info};
-use std::sync::atomic::{AtomicU32, Ordering};
+use log::{LevelFilter, info};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -30,10 +30,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[component]
 pub fn App() -> impl IntoView {
     let (messages, set_messages) = signal(Vec::<(u32, String)>::new());
-    let logger = Box::leak(Box::new(MessagesLogger {
-        writer: set_messages,
-        id: AtomicU32::default(),
-    }));
+    let logger = Box::leak(Box::new(MessagesLogger::new(set_messages)));
     if log::set_logger(logger).is_ok() {
         log::set_max_level(LevelFilter::Debug);
     }
@@ -100,26 +97,4 @@ pub fn App() -> impl IntoView {
         </div>
       </main>
     }
-}
-
-struct MessagesLogger {
-    writer: WriteSignal<Vec<(u32, String)>>,
-    id: AtomicU32,
-}
-
-impl Log for MessagesLogger {
-    fn enabled(&self, _metadata: &Metadata) -> bool {
-        true
-    }
-
-    fn log(&self, record: &Record) {
-        self.writer.update(|v| {
-            v.push((
-                self.id.fetch_add(1, Ordering::SeqCst),
-                format!("[{}] {}", record.level(), record.args()),
-            ));
-        });
-    }
-
-    fn flush(&self) {}
 }

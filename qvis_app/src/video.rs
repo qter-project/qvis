@@ -1,4 +1,4 @@
-use crate::take_picture::TakePictureMessage;
+use crate::server_fns::TakePictureMessage;
 use leptos::{ev::canplay, html, prelude::*};
 use leptos_use::{
     FacingMode, UseEventListenerOptions, UseUserMediaOptions, UseUserMediaReturn,

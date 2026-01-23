@@ -12,7 +12,7 @@ use leptos_axum::{
     generate_route_list_with_exclusions_and_ssg_and_context, handle_server_fns_with_context,
 };
 use leptos_ws::WsSignals;
-use puzzle_theory::puzzle_geometry::{PuzzleGeometry, parsing::puzzle};
+use puzzle_theory::puzzle_geometry::parsing::puzzle;
 use qvis::Pixel;
 use qvis_app::{
     app::{App, shell},
@@ -25,7 +25,6 @@ pub struct AppState {
     server_signals: WsSignals,
     routes: Option<Vec<AxumRouteListing>>,
     options: LeptosOptions,
-    puzzle_geometry: Arc<PuzzleGeometry>,
     calibration_ui_tx: std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Box<[Pixel]>>>,
 }
 
@@ -40,7 +39,6 @@ async fn server_fn_handler(
         move || {
             provide_context(state.options.clone());
             provide_context(state.server_signals.clone());
-            provide_context(state.puzzle_geometry.clone());
             provide_context(state.calibration_ui_tx.clone());
         },
         request,
@@ -65,7 +63,6 @@ async fn leptos_routes_handler(state: State<AppState>, req: Request<AxumBody>) -
 #[tokio::main]
 async fn server_main(
     calibration_ui_tx: std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Box<[Pixel]>>>,
-    puzzle_geometry: Arc<PuzzleGeometry>,
 ) {
     use axum_server::tls_rustls::RustlsConfig;
     let conf = get_configuration(None).unwrap();
@@ -77,7 +74,6 @@ async fn server_main(
         options: leptos_options.clone(),
         routes: None,
         server_signals: server_signals.clone(),
-        puzzle_geometry,
         calibration_ui_tx,
     };
     let state1 = state.clone();
@@ -117,13 +113,10 @@ async fn server_main(
 fn main() {
     let (calibration_ui_tx, calibration_ui_rx) =
         std::sync::mpsc::channel::<tokio::sync::oneshot::Sender<Box<[Pixel]>>>();
+
+    thread::spawn(|| server_main(calibration_ui_tx));
+
     let puzzle_geometry = puzzle("3x3").into_inner();
-    {
-        let puzzle_geometry = Arc::clone(&puzzle_geometry);
-        thread::spawn(move || {
-            server_main(calibration_ui_tx, puzzle_geometry);
-        });
-    }
     while let Ok(calibration_done_tx) = calibration_ui_rx.recv() {
         let puzzle_geometry = Arc::clone(&puzzle_geometry);
         let assignment = calibration_ui::calibration_ui(puzzle_geometry)

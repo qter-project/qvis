@@ -4,11 +4,11 @@ use leptos::{
 };
 use log::warn;
 use puzzle_theory::permutations::Permutation;
-use qvis::Pixel;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ssr")]
 mod ssr_imports {
+    pub use qvis::Pixel;
     pub use leptos::logging::log;
     pub use leptos_ws::ChannelSignal;
     pub use std::sync::Mutex;
@@ -49,24 +49,25 @@ pub async fn take_picture() -> Result<Permutation, ServerFnError> {
                     response_tx.lock().unwrap().take().expect("Expected to send only one response").send(permutation.clone()).unwrap();
                 }
                 TakePictureMessage::NeedsCalibration => {
-                    let calibration_ui_tx = calibration_ui_tx.clone();
-                    let response_tx = response_tx
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("Expected to send only one response");
+                    // let calibration_ui_tx = calibration_ui_tx.clone();
+                    // let response_tx = response_tx
+                    //     .lock()
+                    //     .unwrap()
+                    //     .take()
+                    //     .expect("Expected to send only one response");
 
-                    tokio::task::spawn(async move {
-                        let (calibration_done_tx, calibration_done_rx) = tokio::sync::oneshot::channel();
+                    // tokio::task::spawn(async move {
+                    //     let (calibration_done_tx, calibration_done_rx) = tokio::sync::oneshot::channel();
 
-                        calibration_ui_tx
-                            .send(calibration_done_tx)
-                            .unwrap();
-                        let assignment = calibration_done_rx.await.unwrap();
-                        response_tx
-                            .send(todo!())
-                            .unwrap();
-                    });
+                    //     calibration_ui_tx
+                    //         .send(calibration_done_tx)
+                    //         .unwrap();
+                    //     let assignment = calibration_done_rx.await.unwrap();
+                    //     response_tx
+                    //         .send(todo!())
+                    //         .unwrap();
+                    // });
+                    todo!()
                 }
                 TakePictureMessage::TakePicture => {
                     warn!("Received TakePictureMessage::TakePicture on server, which should not happen");

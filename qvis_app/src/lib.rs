@@ -8,8 +8,9 @@
 pub mod app;
 #[cfg(feature = "ssr")]
 pub mod calibration_ui;
-pub mod take_picture;
+pub mod server_fns;
 pub mod video;
+pub mod messages_logger;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
