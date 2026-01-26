@@ -19,8 +19,8 @@ const UPPER_DIFF_TRACKBAR_NAME: &str = "Upper diff";
 const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
 const SUBMIT_BUTTON_NAME: &str = "Assign sticker";
 const EROSION_KERNEL_MORPH_SHAPE: i32 = MORPH_ELLIPSE;
-const ERODE_DEF_ANCHOR: Point = Point::new(-1, -1);
-const XY_CIRCLE_RADIUS: i32 = 9;
+const DEF_ANCHOR: Point = Point::new(-1, -1);
+const XY_CIRCLE_RADIUS: i32 = 6;
 const MAX_PIXEL_VALUE: i32 = 255;
 const MAX_PIXEL_COUNT: i32 = 500_000;
 
@@ -35,7 +35,6 @@ struct State {
     tmp_mask: Mat,
     grayscale_mask: Mat,
     cleaned_grayscale_mask: Mat,
-    colored_cleaned_mask_cropped: Mat,
     erosion_kernel: Mat,
     erosion_kernel_times_two: Mat,
     displayed_img: Mat,
@@ -74,7 +73,6 @@ fn perm6_from_number(mut n: u16) -> [i32; 6] {
 }
 
 fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Result<()> {
-    // if event == highgui::EVENT_MOUSEMOVE && state.dragging {
     if event == highgui::EVENT_MOUSEMOVE {
         state.maybe_xy = Some((x, y));
         if state.dragging {
@@ -87,13 +85,17 @@ fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Resu
 }
 
 fn update_display(state: &mut State) -> opencv::Result<()> {
-    
+    state.displayed_img = state.img.clone();
+    let ran;
     if let Some((drag_origin_x, drag_origin_y)) = state.maybe_drag_origin
         && let Some((drag_x, drag_y)) = state.maybe_drag_xy
     {
+        ran = true;
         #[allow(clippy::cast_possible_truncation)]
-        let distance =
-            f64::from(drag_x - drag_origin_x).hypot(f64::from(drag_y - drag_origin_y)) as i32 / 3;
+        let distance = (f64::from(drag_x - drag_origin_x)
+            .hypot(f64::from(drag_y - drag_origin_y))
+            .powf(1.5)
+            / 20.0) as i32;
         // angle is between [-pi, pi]; add pi and multiply by 360/pi to get a range
         // of [0, 720] throughout the full circle which is 6!
         //
@@ -142,7 +144,7 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
             &state.grayscale_mask,
             &mut state.cleaned_grayscale_mask,
             &state.erosion_kernel,
-            ERODE_DEF_ANCHOR,
+            DEF_ANCHOR,
             2,
             BORDER_CONSTANT,
             imgproc::morphology_default_border_value()?,
@@ -157,8 +159,10 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
                 MAX_PIXEL_VALUE.try_into().unwrap();
 
             Mat::roi_mut(&mut state.tmp_mask, state.mask_roi)?.set_to_def(&Scalar::all(0.0))?;
+            let mut cleaned_grayscale_mask_cropped_mut =
+                Mat::roi_mut(&mut state.cleaned_grayscale_mask, state.mask_roi)?;
             imgproc::flood_fill_mask(
-                &mut Mat::roi_mut(&mut state.cleaned_grayscale_mask, state.mask_roi)?,
+                &mut cleaned_grayscale_mask_cropped_mut,
                 &mut state.tmp_mask,
                 Point::new(drag_origin_x, drag_origin_y),
                 Scalar::default(), // ignored
@@ -168,39 +172,27 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
                 4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL_VALUE << 8),
             )?;
             std::mem::swap(&mut state.cleaned_grayscale_mask, &mut state.tmp_mask);
+            clear_floodfill_border(&mut state.cleaned_grayscale_mask)?;
             &state.cleaned_grayscale_mask
         } else {
             &state.grayscale_mask
         };
 
+        // For some reason dilation doesn't work on ROIs
         imgproc::dilate(
             to_dilate,
             &mut state.tmp_mask,
             &state.erosion_kernel_times_two,
-            ERODE_DEF_ANCHOR,
+            DEF_ANCHOR,
             1,
             BORDER_CONSTANT,
             imgproc::morphology_default_border_value()?,
         )?;
-        std::mem::swap(&mut state.cleaned_grayscale_mask, &mut state.tmp_mask);
+        std::mem::swap(
+            &mut state.cleaned_grayscale_mask,
+            &mut state.tmp_mask,
+        );
 
-        let cleaned_grayscale_mask_cropped =
-            Mat::roi(&state.cleaned_grayscale_mask, state.mask_roi)?;
-        let colored_cleaned_mask_cropped_channels = opencv::core::Vector::<Mat>::from_iter([
-            cleaned_grayscale_mask_cropped.clone_pointee(),
-            Mat::zeros(state.img.rows(), state.img.cols(), CV_8UC1)?.to_mat()?,
-            cleaned_grayscale_mask_cropped.clone_pointee(),
-        ]);
-        opencv::core::merge(
-            &colored_cleaned_mask_cropped_channels,
-            &mut state.colored_cleaned_mask_cropped,
-        )?;
-
-        opencv::core::add_def(
-            &state.img,
-            &state.colored_cleaned_mask_cropped,
-            &mut state.displayed_img,
-        )?;
         imgproc::line(
             &mut state.displayed_img,
             Point::new(drag_origin_x, drag_origin_y),
@@ -229,12 +221,12 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
             0,
         )?;
     } else {
-        state.displayed_img = state.img.clone();
+        ran = false;
     }
     imgproc::put_text(
         &mut state.displayed_img,
         &format!(
-            "{} on the {} face",
+            "Choose {} on {}",
             state.work[state.current_sticker_idx]
                 .1
                 .iter()
@@ -242,16 +234,59 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
                 .collect::<String>(),
             state.work[state.current_sticker_idx].0.color
         ),
-        Point::new(10, 50),
+        Point::new(10, 40),
         imgproc::FONT_HERSHEY_SIMPLEX,
         1.1,
-        Scalar::new(255.0, 255.0, 255.0, 0.0),
-        4,
+        Scalar::all(0.0),
+        5,
         imgproc::LINE_8,
         false,
     )?;
-
+    imgproc::put_text(
+        &mut state.displayed_img,
+        &format!(
+            "Choose {} on {}",
+            state.work[state.current_sticker_idx]
+                .1
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<String>(),
+            state.work[state.current_sticker_idx].0.color
+        ),
+        Point::new(10, 40),
+        imgproc::FONT_HERSHEY_SIMPLEX,
+        1.1,
+        Scalar::all(f64::from(MAX_PIXEL_VALUE)),
+        2,
+        imgproc::LINE_8,
+        false,
+    )?;
+    if ran {
+        let cleaned_grayscale_mask_cropped =
+            Mat::roi(&state.cleaned_grayscale_mask, state.mask_roi)?;
+        
+        state.displayed_img.set_to(
+            &Scalar::from((MAX_PIXEL_VALUE, 0, MAX_PIXEL_VALUE)),
+            &cleaned_grayscale_mask_cropped,
+        )?;
+    }
     highgui::imshow(WINDOW_NAME, &state.displayed_img)?;
+    Ok(())
+}
+
+fn clear_floodfill_border(mask: &mut Mat) -> opencv::Result<()> {
+    let rows = mask.rows();
+    let cols = mask.cols();
+
+    mask.roi_mut(Rect::new(0, 0, cols, 2))?
+        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
+    mask.roi_mut(Rect::new(0, rows - 2, cols, 2))?
+        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
+    mask.roi_mut(Rect::new(0, 2, 2, rows - 4))?
+        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
+    mask.roi_mut(Rect::new(cols - 2, 2, 2, rows - 4))?
+        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
+
     Ok(())
 }
 
@@ -373,7 +408,6 @@ pub fn pixel_assignment_ui(
     }
 
     let displayed_img = Mat::zeros(img.rows(), img.cols(), CV_8UC3)?.to_mat()?;
-    let colored_cleaned_mask_cropped = displayed_img.clone();
     let grayscale_mask = Mat::zeros(img.rows() + 2, img.cols() + 2, CV_8UC1)?.to_mat()?;
     let cleaned_grayscale_mask = grayscale_mask.clone();
     let tmp_mask = grayscale_mask.clone();
@@ -397,7 +431,6 @@ pub fn pixel_assignment_ui(
         tmp_mask,
         grayscale_mask,
         cleaned_grayscale_mask,
-        colored_cleaned_mask_cropped,
         erosion_kernel,
         erosion_kernel_times_two,
         displayed_img,
