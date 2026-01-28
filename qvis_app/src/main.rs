@@ -18,7 +18,7 @@ use qvis_app::{
     app::{App, shell},
     pixel_assignment_ui,
 };
-use std::{sync::Arc, thread};
+use std::thread;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
@@ -119,7 +119,6 @@ fn main() {
     // For some reason highgui doesn't work unless it's on the main thread
     let puzzle_geometry = puzzle("3x3").into_inner();
     while let Ok(pixel_assignment_done_tx) = pixel_assignment_ui_rx.recv() {
-        let puzzle_geometry = Arc::clone(&puzzle_geometry);
         let assignment = pixel_assignment_ui::pixel_assignment_ui(&puzzle_geometry).unwrap();
         pixel_assignment_done_tx.send(assignment).unwrap();
     }

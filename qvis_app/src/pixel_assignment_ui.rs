@@ -1,12 +1,13 @@
 use internment::ArcIntern;
 use opencv::{
-    core::{BORDER_CONSTANT, CV_8UC1, CV_8UC3, Point, Rect, Scalar, Size},
+    core::{BORDER_CONSTANT, CV_8UC1, CV_8UC3, Point, Rect, Scalar, Size, Vec3b},
     highgui, imgcodecs,
     imgproc::{self, FILLED, FLOODFILL_FIXED_RANGE, FLOODFILL_MASK_ONLY, LINE_8, MORPH_ELLIPSE},
     prelude::*,
 };
 use puzzle_theory::puzzle_geometry::{Face, PuzzleGeometry};
 use qvis::Pixel;
+use rand::{SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::{
     f64::consts::PI,
     sync::{Arc, Mutex},
@@ -14,7 +15,7 @@ use std::{
 
 const WINDOW_NAME: &str = "Qvis Sticker Assignment";
 const EROSION_SIZE_TRACKBAR_NAME: &str = "Erosion size";
-const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [1, 4, 30];
+const EROSION_SIZE_TRACKBAR_MINDEFMAX: [i32; 3] = [2, 4, 20];
 const UPPER_DIFF_TRACKBAR_NAME: &str = "Upper diff";
 const UPPER_DIFF_TRACKBAR_MINDEFMAX: [i32; 3] = [0, 2, 5];
 const SUBMIT_BUTTON_NAME: &str = "Assign sticker";
@@ -22,7 +23,10 @@ const EROSION_KERNEL_MORPH_SHAPE: i32 = MORPH_ELLIPSE;
 const DEF_ANCHOR: Point = Point::new(-1, -1);
 const XY_CIRCLE_RADIUS: i32 = 6;
 const MAX_PIXEL_VALUE: i32 = 255;
-const MAX_PIXEL_COUNT: i32 = 500_000;
+const MAX_PIXEL_COUNT: i32 = 500_000 * 100;
+const ERODE_UNTIL_PERCENT: (i32, i32) = (1, 3);
+const MIN_SAMPLES: i32 = 30;
+const NUM_QVIS_PIXELS: usize = 20;
 
 enum UIState {
     OpenCVError(opencv::Error),
@@ -35,6 +39,7 @@ struct State {
     tmp_mask: Mat,
     grayscale_mask: Mat,
     cleaned_grayscale_mask: Mat,
+    eroded_grayscale_mask: Mat,
     erosion_kernel: Mat,
     erosion_kernel_times_two: Mat,
     displayed_img: Mat,
@@ -72,21 +77,11 @@ fn perm6_from_number(mut n: u16) -> [i32; 6] {
     result
 }
 
-fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Result<()> {
-    if event == highgui::EVENT_MOUSEMOVE {
-        state.maybe_xy = Some((x, y));
-        if state.dragging {
-            state.maybe_drag_xy = Some((x, y));
-            update_display(state)?;
-        }
-    }
-
-    Ok(())
-}
-
 fn update_display(state: &mut State) -> opencv::Result<()> {
-    state.displayed_img = state.img.clone();
+    state.img.copy_to(&mut state.displayed_img)?;
     let ran;
+    let shuffled;
+    let mut nonzeroes: Vec<usize>;
     if let Some((drag_origin_x, drag_origin_y)) = state.maybe_drag_origin
         && let Some((drag_x, drag_y)) = state.maybe_drag_xy
     {
@@ -172,12 +167,25 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
                 4 | FLOODFILL_FIXED_RANGE | FLOODFILL_MASK_ONLY | (MAX_PIXEL_VALUE << 8),
             )?;
             std::mem::swap(&mut state.cleaned_grayscale_mask, &mut state.tmp_mask);
-            clear_floodfill_border(&mut state.cleaned_grayscale_mask)?;
-            &state.cleaned_grayscale_mask
+            &mut state.cleaned_grayscale_mask
         } else {
-            &state.grayscale_mask
+            &mut state.grayscale_mask
         };
 
+        let rows = to_dilate.rows();
+        let cols = to_dilate.cols();
+        to_dilate
+            .roi_mut(Rect::new(0, 0, cols, 2))?
+            .set_to_def(&Scalar::all(0.0))?;
+        to_dilate
+            .roi_mut(Rect::new(0, rows - 2, cols, 2))?
+            .set_to_def(&Scalar::all(0.0))?;
+        to_dilate
+            .roi_mut(Rect::new(0, 2, 2, rows - 4))?
+            .set_to_def(&Scalar::all(0.0))?;
+        to_dilate
+            .roi_mut(Rect::new(cols - 2, 2, 2, rows - 4))?
+            .set_to_def(&Scalar::all(0.0))?;
         // For some reason dilation doesn't work on ROIs
         imgproc::dilate(
             to_dilate,
@@ -188,10 +196,71 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
             BORDER_CONSTANT,
             imgproc::morphology_default_border_value()?,
         )?;
-        std::mem::swap(
-            &mut state.cleaned_grayscale_mask,
-            &mut state.tmp_mask,
-        );
+        std::mem::swap(&mut state.cleaned_grayscale_mask, &mut state.tmp_mask);
+
+        let og_num_pixels = opencv::core::count_non_zero(&state.cleaned_grayscale_mask)?;
+        let mut erosion_count = 0;
+        let mask_to_randomly_sample = loop {
+            let has_eroded_enough = |to_check| -> Result<bool, opencv::Error> {
+                let current_num_pixels = opencv::core::count_non_zero(to_check)?;
+                Ok(current_num_pixels
+                    <= og_num_pixels * ERODE_UNTIL_PERCENT.0 / ERODE_UNTIL_PERCENT.1
+                    || current_num_pixels <= MIN_SAMPLES)
+            };
+            let to_erode = if erosion_count == 0 {
+                if has_eroded_enough(&state.cleaned_grayscale_mask)? {
+                    state
+                        .cleaned_grayscale_mask
+                        .copy_to(&mut state.eroded_grayscale_mask)?;
+                    break &state.cleaned_grayscale_mask;
+                }
+                &state.cleaned_grayscale_mask
+            } else {
+                if has_eroded_enough(&state.eroded_grayscale_mask)? {
+                    std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+                    break &state.eroded_grayscale_mask;
+                }
+                &state.eroded_grayscale_mask
+            };
+
+            imgproc::erode(
+                to_erode,
+                &mut state.tmp_mask,
+                &state.erosion_kernel,
+                DEF_ANCHOR,
+                2,
+                BORDER_CONSTANT,
+                imgproc::morphology_default_border_value()?,
+            )?;
+
+            if erosion_count == 0 {
+                state.tmp_mask.copy_to(&mut state.eroded_grayscale_mask)?;
+            } else {
+                std::mem::swap(&mut state.eroded_grayscale_mask, &mut state.tmp_mask);
+            }
+            erosion_count += 1;
+        };
+
+        let mask_to_randomly_sample =
+            Mat::roi(mask_to_randomly_sample, state.mask_roi)?.clone_pointee();
+
+        let mut seed = [0; 32];
+        seed[0..4].copy_from_slice(&drag_origin_x.to_be_bytes());
+        seed[4..8].copy_from_slice(&drag_origin_y.to_be_bytes());
+        let mut rng = SmallRng::from_seed(seed);
+        nonzeroes = mask_to_randomly_sample
+            .data_bytes()?
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &value)| {
+                if value == u8::try_from(MAX_PIXEL_VALUE).unwrap() {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        shuffled = nonzeroes.partial_shuffle(&mut rng, NUM_QVIS_PIXELS).0;
 
         imgproc::line(
             &mut state.displayed_img,
@@ -222,6 +291,7 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
         )?;
     } else {
         ran = false;
+        shuffled = &mut [];
     }
     imgproc::put_text(
         &mut state.displayed_img,
@@ -264,28 +334,47 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
     if ran {
         let cleaned_grayscale_mask_cropped =
             Mat::roi(&state.cleaned_grayscale_mask, state.mask_roi)?;
-        
         state.displayed_img.set_to(
             &Scalar::from((MAX_PIXEL_VALUE, 0, MAX_PIXEL_VALUE)),
             &cleaned_grayscale_mask_cropped,
         )?;
+
+        let eroded_grayscale_mask_cropped = Mat::roi(&state.eroded_grayscale_mask, state.mask_roi)?;
+        state.displayed_img.set_to(
+            &Scalar::from((MAX_PIXEL_VALUE * 3 / 4, 0, MAX_PIXEL_VALUE * 3 / 4)),
+            &eroded_grayscale_mask_cropped,
+        )?;
+
+        let displayed_image_data_bytes_mut: &mut [Vec3b] = state.displayed_img.data_typed_mut()?;
+        // let cols = state.img.cols() as usize;
+        // dbg!(displayed_image_data_bytes_mut.len());
+        // dbg!(cols);
+        // dbg!(state.img.rows() as usize + 1);
+        // dbg!(&state.samples);
+        for i in shuffled.iter().copied() {
+            // dbg!(i, cols);
+            // let row = i / (cols + 0);
+            // let num_padding_pixels = 2 + 4 * (row - 3);
+            let num_padding_pixels = 0;
+            displayed_image_data_bytes_mut[i - num_padding_pixels] = Vec3b::from_array([
+                u8::try_from(MAX_PIXEL_VALUE).unwrap() / 2,
+                0,
+                u8::try_from(MAX_PIXEL_VALUE).unwrap() / 2,
+            ]);
+        }
     }
     highgui::imshow(WINDOW_NAME, &state.displayed_img)?;
     Ok(())
 }
 
-fn clear_floodfill_border(mask: &mut Mat) -> opencv::Result<()> {
-    let rows = mask.rows();
-    let cols = mask.cols();
-
-    mask.roi_mut(Rect::new(0, 0, cols, 2))?
-        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
-    mask.roi_mut(Rect::new(0, rows - 2, cols, 2))?
-        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
-    mask.roi_mut(Rect::new(0, 2, 2, rows - 4))?
-        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
-    mask.roi_mut(Rect::new(cols - 2, 2, 2, rows - 4))?
-        .set_to(&Scalar::all(0.0), &opencv::core::no_array())?;
+fn mouse_callback(state: &mut State, event: i32, x: i32, y: i32) -> opencv::Result<()> {
+    if event == highgui::EVENT_MOUSEMOVE {
+        state.maybe_xy = Some((x, y));
+        if state.dragging {
+            state.maybe_drag_xy = Some((x, y));
+            update_display(state)?;
+        }
+    }
 
     Ok(())
 }
@@ -410,6 +499,7 @@ pub fn pixel_assignment_ui(
     let displayed_img = Mat::zeros(img.rows(), img.cols(), CV_8UC3)?.to_mat()?;
     let grayscale_mask = Mat::zeros(img.rows() + 2, img.cols() + 2, CV_8UC1)?.to_mat()?;
     let cleaned_grayscale_mask = grayscale_mask.clone();
+    let eroded_grayscale_mask = grayscale_mask.clone();
     let tmp_mask = grayscale_mask.clone();
     let mask_roi = Rect::new(1, 1, img.cols(), img.rows());
     let erosion_kernel = Mat::default();
@@ -431,6 +521,7 @@ pub fn pixel_assignment_ui(
         tmp_mask,
         grayscale_mask,
         cleaned_grayscale_mask,
+        eroded_grayscale_mask,
         erosion_kernel,
         erosion_kernel_times_two,
         displayed_img,
