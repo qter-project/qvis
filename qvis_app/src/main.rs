@@ -19,6 +19,7 @@ use qvis_app::{
     pixel_assignment_ui,
 };
 use std::thread;
+use tokio::net::TcpListener;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
@@ -64,7 +65,6 @@ async fn leptos_routes_handler(state: State<AppState>, req: Request<AxumBody>) -
 async fn server_main(
     pixel_assignment_ui_tx: std::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Box<[Pixel]>>>,
 ) {
-    use axum_server::tls_rustls::RustlsConfig;
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
     let addr = leptos_options.site_addr;
@@ -100,12 +100,8 @@ async fn server_main(
 
     log!("listening on https://{addr}");
 
-    let config =
-        RustlsConfig::from_pem_file("qvis_app/qvis_appCA.pem", "qvis_app/qvis_appCA-key.pem")
-            .await
-            .unwrap();
-    axum_server::bind_rustls(addr, config)
-        .serve(app.into_make_service())
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app.into_make_service())
         .await
         .unwrap();
 }

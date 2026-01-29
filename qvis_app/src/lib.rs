@@ -6,11 +6,11 @@
 )]
 
 pub mod app;
+pub mod messages_logger;
 #[cfg(feature = "ssr")]
 pub mod pixel_assignment_ui;
 pub mod server_fns;
 pub mod video;
-pub mod messages_logger;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

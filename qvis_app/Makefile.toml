@@ -1,0 +1,36 @@
+[env]
+LEPTOS_TAILWIND_VERSION="v4.1.18"
+LEPTOS_WASM_OPT_VERSION="version_125"
+
+[env.mac]
+DYLD_FALLBACK_LIBRARY_PATH="/usr/local/lib:/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/"
+LDFLAGS="-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib"
+LD_LIBRARY_PATH="/usr/local/lib"
+
+[tasks.dev]
+condition = { profiles = [ "mac" ] }
+run_task = { name = ["dev-server", "dev-caddy"], parallel = true }
+
+[tasks.dev-server]
+condition = { profiles = [ "mac" ] }
+command = "cargo"
+args = ["leptos", "watch"]
+
+[tasks.dev-caddy]
+condition = { profiles = [ "mac" ] }
+command = "caddy"
+args = ["reverse-proxy", "--to", ":3000"]
+
+[tasks.pi]
+condition = { profiles = [ "pi" ] }
+run_task = { name = ["pi-server", "pi-caddy"], parallel = true }
+
+[tasks.pi-server]
+condition = { profiles = [ "pi" ] }
+command = "cargo"
+args = ["leptos", "serve"]
+
+[tasks.pi-caddy]
+condition = { profiles = [ "pi" ] }
+command = "caddy"
+args = ["reverse-proxy", "--from", "192.168.191.3", "--to", ":3000"]

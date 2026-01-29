@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ssr")]
 mod ssr_imports {
-    pub use qvis::Pixel;
     pub use leptos::logging::log;
     pub use leptos_ws::ChannelSignal;
+    pub use qvis::Pixel;
     pub use std::sync::Mutex;
 }
 

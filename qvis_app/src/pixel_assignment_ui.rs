@@ -241,6 +241,7 @@ fn update_display(state: &mut State) -> opencv::Result<()> {
             erosion_count += 1;
         };
 
+        // TODO: GET RID OF
         let mask_to_randomly_sample =
             Mat::roi(mask_to_randomly_sample, state.mask_roi)?.clone_pointee();
 
