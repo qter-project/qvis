@@ -56,8 +56,6 @@
               qter.packages."${system}".shiroa
             ]);
 
-          stdenv = pkgs.llvmPackages_15.stdenv;
-
           RUST_BACKTRACE = 1;
           RUSTC_WRAPPER = "sccache";
           SCCACHE_SERVER_PORT = "54226";

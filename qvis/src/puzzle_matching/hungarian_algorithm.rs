@@ -153,6 +153,14 @@ fn relax_potentials(
         return false;
     };
 
+    for i in 0..data.len() {
+        for j in 0..data.len() {
+            if data[i].left.visited && !data[j].right.visited {
+                is_tight[[i, j]] = false;
+            }
+        }
+    }
+
     is_tight[[i, j]] = true;
 
     for elt in data {

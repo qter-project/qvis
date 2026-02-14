@@ -202,10 +202,15 @@ impl Inference {
 
                 items
                     .into_iter()
-                    .map(|(k, v)| (k, match v {
-                        Some(v) => v / normalization,
-                        None => no_data,
-                    }))
+                    .map(|(k, v)| {
+                        (
+                            k,
+                            match v {
+                                Some(v) => v / normalization,
+                                None => no_data,
+                            },
+                        )
+                    })
                     .collect()
             })
             .collect()
@@ -384,6 +389,22 @@ mod tests {
         }
     }
 
+    fn conf_in(
+        inference: &[HashMap<ArcIntern<str>, f64>],
+        group: &PermutationGroup,
+        perm: &Permutation,
+    ) -> f64 {
+        let mut ll = 0.;
+
+        for v in 0..48 {
+            ll += inference[v]
+                .get(&group.facelet_colors()[perm.state().get(v)])
+                .unwrap();
+        }
+
+        ll
+    }
+
     #[test]
     fn test_inference() {
         let mut assignment = Vec::new();
@@ -412,20 +433,35 @@ mod tests {
 
         for _ in 0..30 {
             let perm = stabchain.random(&mut rng);
-            simulate_picture(&perm, &group, 0.2, 0.1, &mut rng, &mut img);
+            simulate_picture(&perm, &group, 0.3, 0.2, &mut rng, &mut img);
             inference.calibrate(&img, &perm, &group);
         }
 
         let matcher = Matcher::new(&puzzle);
 
-        for _ in 0..100 {
+        for _ in 0..1000 {
             let perm = stabchain.random(&mut rng);
-            simulate_picture(&perm, &group, 0.2, 0.1, &mut rng, &mut img);
+            simulate_picture(&perm, &group, 0.3, 0.2, &mut rng, &mut img);
             let inference = inference.infer(&img, &group);
             let (perm_inferred, conf) = matcher.most_likely(&inference, &puzzle);
+
             assert!(0. <= conf, "{conf}");
             assert!(conf <= 1., "{conf}");
             assert_eq!(perm_inferred, perm);
+        }
+
+        for _ in 0..1000 {
+            let perm = stabchain.random(&mut rng);
+            simulate_picture(&perm, &group, 0.5, 0.4, &mut rng, &mut img);
+            let inference = inference.infer(&img, &group);
+            let (perm_inferred, conf) = matcher.most_likely(&inference, &puzzle);
+
+            assert!(0. <= conf, "{conf}");
+            assert!(conf <= 1., "{conf}");
+
+            assert!(
+                conf_in(&inference, &group, &perm) <= conf_in(&inference, &group, &perm_inferred)
+            )
         }
     }
 
