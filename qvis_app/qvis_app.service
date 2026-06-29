@@ -1,0 +1,13 @@
+[Unit]
+Description=Qvis App
+After=network.target
+
+[Service]
+Type=simple
+User=robot
+WorkingDirectory=/home/robot/Desktop/qvis/qvis_app
+ExecStart=caddy run --config Caddyfile
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

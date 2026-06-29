@@ -1,5 +1,3 @@
 - full error handling. what happens if i click x on the highgui window
 - zoom into image on frontend
-
-- OT warning: https://crates.io/crates/tokio-cron-scheduler
 - distance should be based based on closeness to the border
