@@ -36,7 +36,7 @@ impl Log for MessagesLogger {
         self.writer.update(|v| {
             if let Some((ref mut prev_repeated, ref prev_log)) = *prev
                 && let Some((last_id, last)) = v.last_mut()
-                && prev_log == &log
+                && *prev_log == log
             {
                 *last_id = next_id;
                 *prev_repeated += 1;

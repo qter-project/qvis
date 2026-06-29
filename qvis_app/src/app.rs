@@ -165,7 +165,10 @@ pub fn App() -> impl IntoView {
                             let cv_processor = cv_available_rx.borrow_and_update();
                             let cv_processor = cv_processor.as_ref().unwrap();
                             let (permutation, confidence) = cv_processor.process_image(&pixels);
-                            info!("Processed {permutation} with confidence {:.2}", confidence * 100.);
+                            info!(
+                                "Processed {permutation} with confidence {:.2}",
+                                confidence * 100.
+                            );
                             take_picture_channel
                                 .send_message(TakePictureMessage::PermutationResult(
                                     permutation,
@@ -205,8 +208,7 @@ pub fn App() -> impl IntoView {
                         warn!("Received {m:?} on client, which should not happen");
                     }
                 }
-            })
-            .unwrap();
+            });
     }
 
     {
@@ -217,18 +219,16 @@ pub fn App() -> impl IntoView {
             let Some(pixel_assignment) = pixel_assignment else {
                 return;
             };
-            let pixel_assignment = match pixel_assignment {
-                Ok(pixels) => pixels,
-                Err(err) => {
-                    warn!("Pixel assignment failed: {err}");
-                    return;
-                }
+            let Some(pixel_assignment) = pixel_assignment
+                .inspect_err(|err| warn!("Pixel assignment failed: {err}"))
+                .ok()
+            else {
+                return;
             };
 
             let cv_processor =
                 CVProcessor::new(Arc::clone(&cube3), pixel_assignment.len(), pixel_assignment);
 
-            info!("0");
             cv_available_tx.send_modify(|maybe_cv_processor| {
                 *maybe_cv_processor = Some(cv_processor);
             });
